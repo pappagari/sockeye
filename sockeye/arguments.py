@@ -726,6 +726,15 @@ def add_model_parameters(params):
                                    'You can specify separate sequences for encoder and decoder by separating with ":" '
                                    'For example: n:drn '
                                    'Default: %(default)s.')
+    model_params.add_argument('--transformer-concat-encoded-reps',
+                              type=int_greater_or_equal(1),
+                              nargs='+',
+                              default=[],
+                              help='Allow the decoder to attend to representations from multiple encoder layers by '
+                                   'concatenating their outputs in the sequence length dimension. This multiplies the '
+                                   'encoded sequence length by the number of specified layers and does not require '
+                                   'additional model parameters (Wang et al. 2020, arxiv.org/abs/2005.14187). Default: '
+                                   '%(default)s.')
 
     model_params.add_argument('--lhuc',
                               nargs="+",

@@ -18,7 +18,7 @@ import inspect
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import List, Optional, Union
+from typing import List, Optional, Set, Union
 
 import mxnet as mx
 
@@ -287,6 +287,18 @@ class TransformerEncoder(Encoder, mx.gluon.HybridBlock):
                  dtype: str = C.DTYPE_FP32) -> None:
         super().__init__(prefix=prefix)
         self.config = config
+        self.valid_length_scale = 1
+
+        if config.concat_encoded_reps:
+            self.reps_to_concat = set(config.concat_encoded_reps)
+            # Concatenating N representations multiplies sequence length by N
+            self.valid_length_scale *= len(self.reps_to_concat)
+            utils.check_condition(config.num_layers in self.reps_to_concat,
+                                  'Encoder representations to concat must include the last layer '
+                                  f'({config.num_layers}): {sorted(self.reps_to_concat)}')
+            utils.check_condition(all(layer_num <= config.num_layers for layer_num in self.reps_to_concat),
+                                  'Encoder representations to concat must refer to existing layers '
+                                  f'{tuple(range(1, config.num_layers + 1))}: {sorted(self.reps_to_concat)}')
 
         with self.name_scope():
             self.pos_embedding = layers.PositionalEmbeddings(weight_type=self.config.positional_embedding_type,
@@ -317,11 +329,21 @@ class TransformerEncoder(Encoder, mx.gluon.HybridBlock):
                                                                num_heads=self.config.attention_heads)
 
         data = F.transpose(data, axes=(1, 0, 2))
-        for block in self.layers:
+
+        data_to_concat = []
+        for layer_num, block in enumerate(self.layers, 1):
             data = block(data, att_valid_length)
+            if self.config.concat_encoded_reps and layer_num in self.reps_to_concat:
+                data_to_concat.append(data)
+
+        if self.config.concat_encoded_reps:
+            # Concat representations in the sequence length dimension
+            data = F.concat(*data_to_concat, dim=0)
+
         data = self.final_process(data, None)
         data = F.transpose(data, axes=(1, 0, 2))
-        return data, valid_length
+
+        return data, valid_length * self.valid_length_scale
 
     def get_num_hidden(self) -> int:
         """
