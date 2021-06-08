@@ -474,7 +474,7 @@ def create_encoder_config(args: argparse.Namespace,
         use_lhuc=args.lhuc is not None and (C.LHUC_ENCODER in args.lhuc or C.LHUC_ALL in args.lhuc),
         decoder_type=args.decoder,
         use_glu=args.transformer_feed_forward_use_glu,
-        concat_encoded_reps=args.transformer_concat_encoded_reps)
+        multiple_encoder_reps=args.transformer_multiple_encoder_reps)
     encoder_num_hidden = encoder_transformer_model_size
 
     return config_encoder, encoder_num_hidden

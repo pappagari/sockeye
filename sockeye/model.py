@@ -12,6 +12,7 @@
 # permissions and limitations under the License.
 
 import copy
+from itertools import chain
 import time
 import logging
 import os
@@ -194,7 +195,8 @@ class SockeyeModel(mx.gluon.Block):
 
         # Encode input. Shape: (batch, length, num_hidden), (batch,)
         source_encoded, source_encoded_lengths = self.encode(inputs, valid_length=valid_length)
-
+        if self.config.config_encoder.multiple_encoder_reps:
+            source_encoded = self._condense_encoder_reps(source_encoded, source_encoded_lengths)
         predicted_output_length = self.predict_output_length(source_encoded,
                                                              source_encoded_lengths,
                                                              constant_length_ratio)
@@ -217,8 +219,36 @@ class SockeyeModel(mx.gluon.Block):
         source_embed, source_embed_length = self.embedding_source(source, source_length)
         target_embed, target_embed_length = self.embedding_target(target, target_length)
         source_encoded, source_encoded_length = self.encoder(source_embed, source_embed_length)
+        if self.config.config_encoder.multiple_encoder_reps:
+            source_encoded = self._condense_encoder_reps(source_encoded, source_encoded_length)
         states = self.decoder.init_state_from_encoder(source_encoded, source_encoded_length, target_embed)
         return source_encoded, source_encoded_length, target_embed, states
+
+    def _condense_encoder_reps(self, source_encoded, source_encoded_length):
+        num_reps = len(set(self.config.config_encoder.multiple_encoder_reps))
+        max_length_per_rep = source_encoded.shape[1] // num_reps
+        condensed_source_encoded = []
+        for reps, valid_length in zip(source_encoded.split(axis=0,
+                                                           num_outputs=source_encoded.shape[0],
+                                                           squeeze_axis=True),
+                                        source_encoded_length.split(axis=0,
+                                                                    num_outputs=source_encoded_length.shape[0],
+                                                                    squeeze_axis=True)):
+            valid_length_per_rep = int(valid_length.asscalar()) // num_reps
+            if valid_length_per_rep == max_length_per_rep:
+                condensed_source_encoded.append(reps)
+            else:
+                valid_indices = []
+                pad_indices = []
+                for rep_num in range(num_reps):
+                    i = rep_num * max_length_per_rep
+                    j = i + valid_length_per_rep
+                    k = j + (max_length_per_rep - valid_length_per_rep)
+                    valid_indices.append(range(i, j))
+                    pad_indices.append(range(j, k))
+                indices = mx.nd.array(list(chain(*valid_indices, *pad_indices)))
+                condensed_source_encoded.append(reps.take(indices))
+        return mx.nd.stack(*condensed_source_encoded, axis=0)
 
     def decode_step(self, step_input, states, vocab_slice_ids=None):
         """

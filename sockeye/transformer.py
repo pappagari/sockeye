@@ -41,7 +41,7 @@ class TransformerConfig(config.Config):
     use_lhuc: bool = False
     depth_key_value: int = 0
     use_glu: bool = False
-    concat_encoded_reps: Optional[List[int]] = None
+    multiple_encoder_reps: Optional[List[int]] = None
 
 
 class TransformerEncoderBlock(mx.gluon.HybridBlock):

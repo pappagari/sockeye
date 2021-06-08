@@ -287,18 +287,6 @@ class TransformerEncoder(Encoder, mx.gluon.HybridBlock):
                  dtype: str = C.DTYPE_FP32) -> None:
         super().__init__(prefix=prefix)
         self.config = config
-        self.valid_length_scale = 1
-
-        if config.concat_encoded_reps:
-            self.reps_to_concat = set(config.concat_encoded_reps)
-            # Concatenating N representations multiplies sequence length by N
-            self.valid_length_scale *= len(self.reps_to_concat)
-            utils.check_condition(config.num_layers in self.reps_to_concat,
-                                  'Encoder representations to concat must include the last layer '
-                                  f'({config.num_layers}): {sorted(self.reps_to_concat)}')
-            utils.check_condition(all(layer_num <= config.num_layers for layer_num in self.reps_to_concat),
-                                  'Encoder representations to concat must refer to existing layers '
-                                  f'{tuple(range(1, config.num_layers + 1))}: {sorted(self.reps_to_concat)}')
 
         with self.name_scope():
             self.pos_embedding = layers.PositionalEmbeddings(weight_type=self.config.positional_embedding_type,
@@ -316,6 +304,15 @@ class TransformerEncoder(Encoder, mx.gluon.HybridBlock):
                                                                      dropout=config.dropout_prepost,
                                                                      prefix="final_process_",
                                                                      num_hidden=self.config.model_size)
+        if config.multiple_encoder_reps:
+            self.layer_reps_to_concat = set(config.multiple_encoder_reps)
+            utils.check_condition(config.num_layers in self.layer_reps_to_concat,
+                                  'Specified encoder representations must include the last layer '
+                                  f'({config.num_layers}): {sorted(self.layer_reps_to_concat)}')
+            utils.check_condition(all(layer_num <= config.num_layers for layer_num in self.layer_reps_to_concat),
+                                  'Specified encoder representations must refer to existing layers '
+                                  f'{tuple(range(1, config.num_layers + 1))}: {sorted(self.layer_reps_to_concat)}')
+
 
     def hybrid_forward(self, F, data, valid_length):
         # positional embedding
@@ -333,17 +330,19 @@ class TransformerEncoder(Encoder, mx.gluon.HybridBlock):
         data_to_concat = []
         for layer_num, block in enumerate(self.layers, 1):
             data = block(data, att_valid_length)
-            if self.config.concat_encoded_reps and layer_num in self.reps_to_concat:
+            if self.config.multiple_encoder_reps and layer_num in self.layer_reps_to_concat:
                 data_to_concat.append(data)
 
-        if self.config.concat_encoded_reps:
-            # Concat representations in the sequence length dimension
+        if self.config.multiple_encoder_reps:
             data = F.concat(*data_to_concat, dim=0)
 
         data = self.final_process(data, None)
         data = F.transpose(data, axes=(1, 0, 2))
 
-        return data, valid_length * self.valid_length_scale
+        if self.config.multiple_encoder_reps:
+            valid_length = valid_length * len(self.layer_reps_to_concat)
+
+        return data, valid_length
 
     def get_num_hidden(self) -> int:
         """
