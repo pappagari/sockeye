@@ -225,28 +225,64 @@ class SockeyeModel(mx.gluon.Block):
         return source_encoded, source_encoded_length, target_embed, states
 
     def _condense_encoder_reps(self, source_encoded, source_encoded_length):
+        """
+        Condense multiple encoder representations that are concatenated in the
+        seq_len dimension. For batch_size > 1, any sequences less than the
+        batch/bucket max length will be padded. For example:
+
+        input = [[a b <pad> <pad>]
+                 [c d e <pad>]]
+
+        Concatenating encoder representations for layers 1 and 2 yields:
+
+        source_encoded =
+            [[a_l1 b_l1 <pad>_l1 <pad>_l1 a_l2 b_l2 <pad>_l2 <pad>_l2]
+             [c_l1 d_l1 e_l1 <pad>_l1 c_l2 d_l2 e_l2 <pad>_l2]]
+
+        source_encoded_length = [4, 6]
+
+        For the transformer decoder to work properly, the non-padding data needs
+        to be condensed (consolidated to the left) so that attention layers
+        correctly distinguish between data and padding based on
+        source_encoded_length:
+
+        condensed_source_encoded =
+            [[a_l1 b_l1 a_l2 b_l2 <pad>_l1 <pad>_l1 <pad>_l2 <pad>_l2]
+             [c_l1 d_l1 e_l1 c_l2 d_l2 e_l2 <pad>_l1 <pad>_l2]]
+
+        :param source_encoded:
+        :param source_encoded_length:
+        :return:
+        """
+        assert self.config.config_encoder.multiple_encoder_reps is not None, \
+            'This method should only be called when using multiple encoder representations'
+        if source_encoded.shape[0] == 1:
+            # No padding when batch_size=1; no need to condense
+            return source_encoded
         num_reps = len(set(self.config.config_encoder.multiple_encoder_reps))
-        max_length_per_rep = source_encoded.shape[1] // num_reps
+        padded_rep_length = source_encoded.shape[1] // num_reps
         condensed_source_encoded = []
-        for reps, valid_length in zip(source_encoded.split(axis=0,
-                                                           num_outputs=source_encoded.shape[0],
-                                                           squeeze_axis=True),
-                                        source_encoded_length.split(axis=0,
-                                                                    num_outputs=source_encoded_length.shape[0],
-                                                                    squeeze_axis=True)):
-            valid_length_per_rep = int(valid_length.asscalar()) // num_reps
-            if valid_length_per_rep == max_length_per_rep:
+        # Process one encoded sequence at a time
+        for reps, valid_length in zip(source_encoded, source_encoded_length):
+            # Actual length of each representation in this sequence
+            valid_rep_length = int(valid_length.asscalar()) // num_reps
+            if valid_rep_length == padded_rep_length:
+                # No padding for batch/bucket max length; no need to condense
                 condensed_source_encoded.append(reps)
             else:
+                # Build list of indices that remaps alternating spans of data
+                # and padding to all data followed by all padding, otherwise
+                # maintaining order
                 valid_indices = []
                 pad_indices = []
                 for rep_num in range(num_reps):
-                    i = rep_num * max_length_per_rep
-                    j = i + valid_length_per_rep
-                    k = j + (max_length_per_rep - valid_length_per_rep)
+                    i = rep_num * padded_rep_length
+                    j = i + valid_rep_length
+                    k = j + (padded_rep_length - valid_rep_length)
                     valid_indices.append(range(i, j))
                     pad_indices.append(range(j, k))
                 indices = mx.nd.array(list(chain(*valid_indices, *pad_indices)))
+                # Remap (sequence finished)
                 condensed_source_encoded.append(reps.take(indices))
         return mx.nd.stack(*condensed_source_encoded, axis=0)
 

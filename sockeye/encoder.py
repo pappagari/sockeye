@@ -340,7 +340,15 @@ class TransformerEncoder(Encoder, mx.gluon.HybridBlock):
         data = F.transpose(data, axes=(1, 0, 2))
 
         if self.config.multiple_encoder_reps:
+            # Using encoder representations from N layers multiplies the
+            # sequence length by N.
             valid_length = valid_length * len(self.layer_reps_to_concat)
+
+            # NOTE: Multiple encoder representations must also be condensed for
+            # the decoder to use them correctly (all data followed by all
+            # padding to match valid_length for each sequence). This is
+            # implemented in SockeyeModel as it requires NDArray operations
+            # that break hybridization.
 
         return data, valid_length
 
