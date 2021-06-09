@@ -326,6 +326,7 @@ class TransformerEncoder(Encoder, mx.gluon.HybridBlock):
         att_valid_length = layers.prepare_source_valid_lengths(F, valid_length, data,
                                                                num_heads=self.config.attention_heads)
 
+        # (seq_len, batch_size, model_size)
         data = F.transpose(data, axes=(1, 0, 2))
 
         data_to_concat = []
@@ -335,6 +336,7 @@ class TransformerEncoder(Encoder, mx.gluon.HybridBlock):
                 data_to_concat.append(data)
 
         if self.config.multiple_encoder_reps:
+            # (seq_len * num_reps, batch_size, model_size)
             data = F.concat(*data_to_concat, dim=0)
 
         data = self.final_process(data, None)
