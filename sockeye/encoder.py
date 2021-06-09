@@ -15,6 +15,7 @@
 Encoders for sequence-to-sequence models.
 """
 import inspect
+from itertools import chain
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -344,11 +345,12 @@ class TransformerEncoder(Encoder, mx.gluon.HybridBlock):
             # sequence length by N.
             valid_length = valid_length * len(self.layer_reps_to_concat)
 
-            # NOTE: Multiple encoder representations must also be condensed for
-            # the decoder to use them correctly (all data followed by all
-            # padding to match valid_length for each sequence). This is
-            # implemented in SockeyeModel as it requires NDArray operations
-            # that break hybridization.
+            # NOTE: Multiple encoder representations must also be consolidated
+            # for the decoder to use them correctly. This is implemented in the
+            # separate `consolidate_encoder_reps` method as it requires NDArray
+            # operations that break hybridization. When using multiple encoder
+            # representations, call `consolidate_encoder_reps` immediately after
+            # running this encoder.
 
         return data, valid_length
 
@@ -357,6 +359,76 @@ class TransformerEncoder(Encoder, mx.gluon.HybridBlock):
         Return the representation size of this encoder.
         """
         return self.config.model_size
+
+
+def consolidate_encoder_reps(data: mx.nd.NDArray, valid_length: mx.nd.NDArray, num_reps: int):
+        """
+        Consolidate multiple encoder representations that are concatenated in
+        the seq_len dimension. This is required for batch_size > 1 because
+        sequences shorter than the batch/bucket max length are padded. For
+        example:
+
+        input = [[a b <pad> <pad>]
+                 [c d e <pad>]]
+
+        valid_length = [2, 3]
+
+        Concatenating encoder representations for layers 1 and 2 and updating
+        valid_length accordingly yields:
+
+        data = [[a_l1 b_l1 <pad>_l1 <pad>_l1 a_l2 b_l2 <pad>_l2 <pad>_l2]
+                [c_l1 d_l1 e_l1 <pad>_l1 c_l2 d_l2 e_l2 <pad>_l2]]
+
+        valid_length = [4, 6]
+
+        For the decoder to work properly, all encodings of source content tokens
+        must be consolidated to the left, followed by all encodings of padding
+        tokens. This enables attention layers to correctly use content encodings
+        and ignore padding encodings based on valid_length:
+
+        consolidated_data =
+            [[a_l1 b_l1 a_l2 b_l2 <pad>_l1 <pad>_l1 <pad>_l2 <pad>_l2]
+             [c_l1 d_l1 e_l1 c_l2 d_l2 e_l2 <pad>_l1 <pad>_l2]]
+
+        valid_length = [4, 6]
+
+        :param data: Encoded data from `hybrid_forward`. Shape:
+                     (batch_size, seq_len * num_reps, model_size)
+        :param valid_length: Encoded data lengths from `hybrid_forward`. Shape:
+                             (batch_size)
+        :return: consolidated data. Shape:
+                 (batch_size, seq_len * num_reps, model_size)
+        """
+        assert num_reps > 1, \
+            'This method should only be called when using multiple encoder representations'
+        if data.shape[0] == 1:
+            # No padding when batch_size=1; no need to condense
+            return data
+        padded_rep_length = data.shape[1] // num_reps
+        condensed_source_encoded = []
+        # Process one encoded sequence at a time
+        for reps, vlen in zip(data, valid_length):
+            # Actual length of each representation in this sequence
+            valid_rep_length = int(vlen.asscalar()) // num_reps
+            if valid_rep_length == padded_rep_length:
+                # No padding for batch/bucket max length; no need to condense
+                condensed_source_encoded.append(reps)
+            else:
+                # Build list of indices that remaps alternating spans of data
+                # and padding to all data followed by all padding, otherwise
+                # maintaining order
+                valid_indices = []
+                pad_indices = []
+                for rep_num in range(num_reps):
+                    i = rep_num * padded_rep_length
+                    j = i + valid_rep_length
+                    k = j + (padded_rep_length - valid_rep_length)
+                    valid_indices.append(range(i, j))
+                    pad_indices.append(range(j, k))
+                indices = mx.nd.array(list(chain(*valid_indices, *pad_indices)))
+                # Remap (sequence finished)
+                condensed_source_encoded.append(reps.take(indices))
+        return mx.nd.stack(*condensed_source_encoded, axis=0)
 
 
 EncoderConfig = Union[transformer.TransformerConfig]

@@ -13,6 +13,9 @@
 
 import pytest
 
+import mxnet as mx
+import numpy as np
+
 import sockeye.constants as C
 import sockeye.encoder
 import sockeye.transformer
@@ -57,3 +60,15 @@ def test_get_transformer_encoder(lhuc):
 
     assert type(encoder) == sockeye.encoder.TransformerEncoder
     assert encoder.prefix == prefix + C.TRANSFORMER_ENCODER_PREFIX
+
+
+def test_consolidate_encoder_reps():
+    # In this artificial data, encoded content has positive values and encoded
+    # padding has negative values.
+    data = mx.nd.array([[[1, 2], [3, 4], [-1, -2], [-3, -4], [5, 6], [7, 8], [-5, -6], [-7, -8]],
+                        [[1, 2], [3, 4], [5, 6], [-1, -2], [7, 8], [9, 10], [11, 12], [-3, -4]]])
+    valid_length = mx.nd.array([4, 6])
+    expected_consolidated_data = mx.nd.array([[[1, 2], [3, 4], [5, 6], [7, 8], [-1, -2], [-3, -4], [-5, -6], [-7, -8]],
+                                              [[1, 2], [3, 4], [5, 6], [7, 8], [9, 10], [11, 12], [-1, -2], [-3, -4]]])
+    consolidated_data = sockeye.encoder.consolidate_encoder_reps(data, valid_length, num_reps=2)
+    assert np.array_equal(consolidated_data.asnumpy(), expected_consolidated_data.asnumpy())
