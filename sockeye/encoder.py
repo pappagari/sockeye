@@ -389,19 +389,20 @@ def concat_encoder_reps(layer_reps: List[mx.nd.NDArray], valid_length: mx.nd.NDA
 
         Output of this function:
 
-        concatenated_layer_reps =
+        concat_layer_reps =
             [[a_l1 b_l1 a_l2 b_l2 <pad>_l1 <pad>_l1 <pad>_l2 <pad>_l2]
              [c_l1 d_l1 e_l1 c_l2 d_l2 e_l2 <pad>_l1 <pad>_l2]]
 
-        updated_valid_length = [4, 6]
+        concat_valid_length = [4, 6]
 
         :param layer_reps: Encoded data from `hybrid_forward`. List of NDArrays
                            with shape (batch_size, seq_len, model_size)
         :param valid_length: Encoded data lengths from `hybrid_forward`. NDArray
                              with shape (batch_size)
-        :return: consolidated data. NDArray with shape
+        :return: Concatenated data. NDArray with shape
                  (batch_size, seq_len * num_reps, model_size) where num_reps is
                  len(layer_data)
+                 Updated valid_length. NDArray with shape (batch_size)
         """
         num_reps = len(layer_reps)
         batch_size, padded_rep_length, model_size = layer_reps[0].shape
