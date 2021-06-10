@@ -424,15 +424,17 @@ def concat_encoder_reps(layer_reps: List[mx.nd.NDArray], valid_length: mx.nd.NDA
         # otherwise preserving order.
         remap = []  # type: List[int]
         for seq_num, vlen in enumerate(valid_length):
+            # Start position in reshaped batch
+            seq_start = seq_num * padded_rep_length * num_reps
             # Actual length of each representation in the current sequence
             valid_rep_length = int(vlen.asscalar())
-            # Indices for remapping current sequence
+            # Indices for remapping the current sequence
             valid_indices = []  # type: List[int]
             pad_indices = []  # type: List[int]
             for rep_num in range(num_reps):
                 # Track positions of encoded content vs padding for the current
                 # representation within the current sequence
-                i = (seq_num * padded_rep_length * num_reps) + rep_num * padded_rep_length
+                i = seq_start + rep_num * padded_rep_length
                 j = i + valid_rep_length
                 k = j + (padded_rep_length - valid_rep_length)
                 valid_indices.extend(range(i, j))
