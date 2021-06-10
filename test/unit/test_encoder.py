@@ -62,13 +62,20 @@ def test_get_transformer_encoder(lhuc):
     assert encoder.prefix == prefix + C.TRANSFORMER_ENCODER_PREFIX
 
 
-def test_consolidate_encoder_reps():
+def test_concat_encoder_reps():
     # In this artificial data, encoded content has positive values and encoded
     # padding has negative values.
-    data = mx.nd.array([[[1, 2], [3, 4], [-1, -2], [-3, -4], [5, 6], [7, 8], [-5, -6], [-7, -8]],
-                        [[1, 2], [3, 4], [5, 6], [-1, -2], [7, 8], [9, 10], [11, 12], [-3, -4]]])
-    valid_length = mx.nd.array([4, 6])
-    expected_consolidated_data = mx.nd.array([[[1, 2], [3, 4], [5, 6], [7, 8], [-1, -2], [-3, -4], [-5, -6], [-7, -8]],
-                                              [[1, 2], [3, 4], [5, 6], [7, 8], [9, 10], [11, 12], [-1, -2], [-3, -4]]])
-    consolidated_data = sockeye.encoder.consolidate_encoder_reps(data, valid_length, num_reps=2)
-    assert np.array_equal(consolidated_data.asnumpy(), expected_consolidated_data.asnumpy())
+    layer_reps = [mx.nd.array([[[1, 2], [3, 4], [-1, -2], [-3, -4]],
+                               [[1, 2], [3, 4], [5, 6], [-1, -2]]]),
+                  mx.nd.array([[[5, 6], [7, 8], [-5, -6], [-7, -8]],
+                               [[7, 8], [9, 10], [11, 12], [-3, -4]]])]
+    valid_length = mx.nd.array([2, 3])
+
+    expected_concat_reps = mx.nd.array([[[1, 2], [3, 4], [5, 6], [7, 8], [-1, -2], [-3, -4], [-5, -6], [-7, -8]],
+                                        [[1, 2], [3, 4], [5, 6], [7, 8], [9, 10], [11, 12], [-1, -2], [-3, -4]]])
+    expected_concat_valid_length = mx.nd.array([4, 6])
+
+    concat_reps, concat_valid_length = sockeye.encoder.concat_encoder_reps(layer_reps, valid_length)
+
+    assert np.array_equal(concat_reps.asnumpy(), expected_concat_reps.asnumpy())
+    assert np.array_equal(concat_valid_length.asnumpy(), expected_concat_valid_length.asnumpy())

@@ -195,9 +195,8 @@ class SockeyeModel(mx.gluon.Block):
 
         # Encode input. Shape: (batch, length, num_hidden), (batch,)
         source_encoded, source_encoded_lengths = self.encode(inputs, valid_length=valid_length)
-        if self.config.config_encoder.multiple_encoder_reps:
-            num_reps = len(set(self.config.config_encoder.multiple_encoder_reps))
-            source_encoded = encoder.consolidate_encoder_reps(source_encoded, source_encoded_lengths, num_reps)
+        if isinstance(source_encoded, list):
+            source_encoded, source_encoded_lengths = encoder.concat_encoder_reps(source_encoded, source_encoded_lengths)
         predicted_output_length = self.predict_output_length(source_encoded,
                                                              source_encoded_lengths,
                                                              constant_length_ratio)
@@ -220,9 +219,8 @@ class SockeyeModel(mx.gluon.Block):
         source_embed, source_embed_length = self.embedding_source(source, source_length)
         target_embed, target_embed_length = self.embedding_target(target, target_length)
         source_encoded, source_encoded_length = self.encoder(source_embed, source_embed_length)
-        if self.config.config_encoder.multiple_encoder_reps:
-            num_reps = len(set(self.config.config_encoder.multiple_encoder_reps))
-            source_encoded = encoder.consolidate_encoder_reps(source_encoded, source_encoded_length, num_reps)
+        if isinstance(source_encoded, list):
+            source_encoded, source_encoded_length = encoder.concat_encoder_reps(source_encoded, source_encoded_length)
         states = self.decoder.init_state_from_encoder(source_encoded, source_encoded_length, target_embed)
         return source_encoded, source_encoded_length, target_embed, states
 

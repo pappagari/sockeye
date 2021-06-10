@@ -15,7 +15,6 @@
 Encoders for sequence-to-sequence models.
 """
 import inspect
-from itertools import chain
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -305,17 +304,27 @@ class TransformerEncoder(Encoder, mx.gluon.HybridBlock):
                                                                      dropout=config.dropout_prepost,
                                                                      prefix="final_process_",
                                                                      num_hidden=self.config.model_size)
+
+        # If specified, return representations from multiple layers. By default,
+        # return representations from only the last layer.
         if config.multiple_encoder_reps:
-            self.layer_reps_to_concat = set(config.multiple_encoder_reps)
-            utils.check_condition(config.num_layers in self.layer_reps_to_concat,
+            self.layer_reps_to_return = set(config.multiple_encoder_reps)
+            utils.check_condition(config.num_layers in self.layer_reps_to_return,
                                   'Specified encoder representations must include the last layer '
-                                  f'({config.num_layers}): {sorted(self.layer_reps_to_concat)}')
-            utils.check_condition(all(layer_num <= config.num_layers for layer_num in self.layer_reps_to_concat),
+                                  f'({config.num_layers}): {sorted(self.layer_reps_to_return)}')
+            utils.check_condition(all(layer_num <= config.num_layers for layer_num in self.layer_reps_to_return),
                                   'Specified encoder representations must refer to existing layers '
-                                  f'{tuple(range(1, config.num_layers + 1))}: {sorted(self.layer_reps_to_concat)}')
+                                  f'{tuple(range(1, config.num_layers + 1))}: {sorted(self.layer_reps_to_return)}')
+        else:
+            self.layer_reps_to_return = {config.num_layers}
 
 
     def hybrid_forward(self, F, data, valid_length):
+        """
+        Returns encoded data (NDArray/Symbol for single representation or list
+        of NDArrays/Symbols for multiple representations) and valid sequence
+        lengths
+        """
         # positional embedding
         data = self.pos_embedding(data, None)
 
@@ -329,32 +338,24 @@ class TransformerEncoder(Encoder, mx.gluon.HybridBlock):
         # (seq_len, batch_size, model_size)
         data = F.transpose(data, axes=(1, 0, 2))
 
-        data_to_concat = []
+        # Run encoder layers, keeping references to layer representations (data)
+        # that will be returned
+        layer_data = []
         for layer_num, block in enumerate(self.layers, 1):
             data = block(data, att_valid_length)
-            if self.config.multiple_encoder_reps and layer_num in self.layer_reps_to_concat:
-                data_to_concat.append(data)
+            if layer_num in self.layer_reps_to_return:
+                layer_data.append(data)
+
+        # Apply final processing to each representation
+        layer_data = [self.final_process(data, None) for data in layer_data]
+        layer_data = [F.transpose(data, axes=(1, 0, 2)) for data in layer_data]
 
         if self.config.multiple_encoder_reps:
-            # (seq_len * num_reps, batch_size, model_size)
-            data = F.concat(*data_to_concat, dim=0)
+            # List of representations
+            return layer_data, valid_length
 
-        data = self.final_process(data, None)
-        data = F.transpose(data, axes=(1, 0, 2))
-
-        if self.config.multiple_encoder_reps:
-            # Using encoder representations from N layers multiplies the
-            # sequence length by N.
-            valid_length = valid_length * len(self.layer_reps_to_concat)
-
-            # NOTE: Multiple encoder representations must also be consolidated
-            # for the decoder to use them correctly. This is implemented in the
-            # separate `consolidate_encoder_reps` method as it requires NDArray
-            # operations that break hybridization. When using multiple encoder
-            # representations, call `consolidate_encoder_reps` immediately after
-            # running this encoder.
-
-        return data, valid_length
+        # Default: single representation
+        return layer_data[0], valid_length
 
     def get_num_hidden(self) -> int:
         """
@@ -363,74 +364,87 @@ class TransformerEncoder(Encoder, mx.gluon.HybridBlock):
         return self.config.model_size
 
 
-def consolidate_encoder_reps(data: mx.nd.NDArray, valid_length: mx.nd.NDArray, num_reps: int):
+def concat_encoder_reps(layer_reps: List[mx.nd.NDArray], valid_length: mx.nd.NDArray):
         """
-        Consolidate multiple encoder representations that are concatenated in
-        the seq_len dimension. This is required for batch_size > 1 because
-        sequences shorter than the batch/bucket max length are padded. For
-        example:
+        Concatenate multiple encoder representations in the seq_len dimension
+        and update valid_length to match. Reorder each resulting sequence so
+        that all content encodings are consolidated to the left, followed by all
+        padding encodings. Consolidation is required for valid_length to be
+        meaningful and thus for decoder attention layers to work properly.
+
+        Example:
 
         input = [[a b <pad> <pad>]
                  [c d e <pad>]]
 
         valid_length = [2, 3]
 
-        Concatenating encoder representations for layers 1 and 2 and updating
-        valid_length accordingly yields:
+        Output of an encoder that returns representations from layers 1 and 2,
+        where a_l1 is the encoding of token "a" from layer 1, etc.:
 
-        data = [[a_l1 b_l1 <pad>_l1 <pad>_l1 a_l2 b_l2 <pad>_l2 <pad>_l2]
-                [c_l1 d_l1 e_l1 <pad>_l1 c_l2 d_l2 e_l2 <pad>_l2]]
+        layer_reps = [[[a_l1 b_l1 <pad>_l1 <pad>_l1]
+                       [c_l1 d_l1 e_l1 <pad>_l1]],
+                      [[a_l2 b_l2 <pad>_l2 <pad>_l2]
+                       [c_l2 d_l2 e_l2 <pad>_l2]]]
 
-        valid_length = [4, 6]
+        Output of this function:
 
-        For the decoder to work properly, all encodings of source content tokens
-        must be consolidated to the left, followed by all encodings of padding
-        tokens. This enables attention layers to correctly use content encodings
-        and ignore padding encodings based on valid_length:
-
-        consolidated_data =
+        concatenated_layer_reps =
             [[a_l1 b_l1 a_l2 b_l2 <pad>_l1 <pad>_l1 <pad>_l2 <pad>_l2]
              [c_l1 d_l1 e_l1 c_l2 d_l2 e_l2 <pad>_l1 <pad>_l2]]
 
-        valid_length = [4, 6]
+        updated_valid_length = [4, 6]
 
-        :param data: Encoded data from `hybrid_forward`. Shape:
-                     (batch_size, seq_len * num_reps, model_size)
-        :param valid_length: Encoded data lengths from `hybrid_forward`. Shape:
-                             (batch_size)
-        :return: consolidated data. Shape:
-                 (batch_size, seq_len * num_reps, model_size)
+        :param layer_reps: Encoded data from `hybrid_forward`. List of NDArrays
+                           with shape (batch_size, seq_len, model_size)
+        :param valid_length: Encoded data lengths from `hybrid_forward`. NDArray
+                             with shape (batch_size)
+        :return: consolidated data. NDArray with shape
+                 (batch_size, seq_len * num_reps, model_size) where num_reps is
+                 len(layer_data)
         """
-        assert num_reps > 1, \
-            'This method should only be called when using multiple encoder representations'
-        if data.shape[0] == 1:
-            # No padding when batch_size=1; no need to condense
-            return data
-        padded_rep_length = data.shape[1] // num_reps
-        condensed_source_encoded = []
-        # Process one encoded sequence at a time
-        for reps, vlen in zip(data, valid_length):
-            # Actual length of each representation in this sequence
-            valid_rep_length = int(vlen.asscalar()) // num_reps
-            if valid_rep_length == padded_rep_length:
-                # No padding for batch/bucket max length; no need to condense
-                condensed_source_encoded.append(reps)
-            else:
-                # Build list of indices that remaps alternating spans of data
-                # and padding to all data followed by all padding, otherwise
-                # maintaining order
-                valid_indices = []
-                pad_indices = []
-                for rep_num in range(num_reps):
-                    i = rep_num * padded_rep_length
-                    j = i + valid_rep_length
-                    k = j + (padded_rep_length - valid_rep_length)
-                    valid_indices.append(range(i, j))
-                    pad_indices.append(range(j, k))
-                indices = mx.nd.array(list(chain(*valid_indices, *pad_indices)))
-                # Remap (sequence finished)
-                condensed_source_encoded.append(reps.take(indices))
-        return mx.nd.stack(*condensed_source_encoded, axis=0)
+        num_reps = len(layer_reps)
+        batch_size, padded_rep_length, model_size = layer_reps[0].shape
+        if num_reps == 1:
+            # Single representation; nothing to concat
+            return layer_reps[0], valid_length
+
+        # Concat N representations in seq_len dimension
+        concat_reps = mx.nd.concat(*layer_reps, dim=1)
+        concat_valid_length = valid_length * num_reps
+
+        if concat_reps.shape[0] == 1:
+            # Batch size 1: no padding encodings; nothing to remap
+            return concat_reps, concat_valid_length
+
+        # Build the list of indices that remaps encodings in a reshaped batch
+        # (batch_size * seq_len). For each sequence (span of seq_len in reshaped
+        # batch), all content embeddings are followed by all padding embeddings,
+        # otherwise preserving order.
+        remap = []  # type: List[int]
+        for seq_num, vlen in enumerate(valid_length):
+            # Actual length of each representation in the current sequence
+            valid_rep_length = int(vlen.asscalar())
+            # Indexes for remapping current sequence
+            valid_indices = []  # type: List[int]
+            pad_indices = []  # type: List[int]
+            for rep_num in range(num_reps):
+                # Track positions of encoded content vs padding for the current
+                # representation within the current sequence
+                i = (seq_num * padded_rep_length * num_reps) + rep_num * padded_rep_length
+                j = i + valid_rep_length
+                k = j + (padded_rep_length - valid_rep_length)
+                valid_indices.extend(range(i, j))
+                pad_indices.extend(range(j, k))
+            remap.extend(valid_indices)
+            remap.extend(pad_indices)
+        # Use reshaping to apply a single take operation using the remapping
+        # list
+        concat_reps = concat_reps.reshape(shape=(batch_size * padded_rep_length * num_reps, model_size))
+        concat_reps = concat_reps.take(mx.nd.array(remap))
+        concat_reps = concat_reps.reshape(shape=(batch_size, padded_rep_length * num_reps, model_size))
+
+        return concat_reps, concat_valid_length
 
 
 EncoderConfig = Union[transformer.TransformerConfig]
