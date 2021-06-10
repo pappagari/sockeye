@@ -420,13 +420,13 @@ def concat_encoder_reps(layer_reps: List[mx.nd.NDArray], valid_length: mx.nd.NDA
 
         # Build the list of indices that remaps encodings in a reshaped batch
         # (batch_size * seq_len). For each sequence (span of seq_len in reshaped
-        # batch), all content embeddings are followed by all padding embeddings,
+        # batch), all content encodings are followed by all padding encodings,
         # otherwise preserving order.
         remap = []  # type: List[int]
         for seq_num, vlen in enumerate(valid_length):
             # Actual length of each representation in the current sequence
             valid_rep_length = int(vlen.asscalar())
-            # Indexes for remapping current sequence
+            # Indices for remapping current sequence
             valid_indices = []  # type: List[int]
             pad_indices = []  # type: List[int]
             for rep_num in range(num_reps):
