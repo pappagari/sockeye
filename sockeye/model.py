@@ -12,7 +12,6 @@
 # permissions and limitations under the License.
 
 import copy
-from itertools import chain
 import time
 import logging
 import os
