@@ -727,14 +727,13 @@ def add_model_parameters(params):
                                    'For example: n:drn '
                                    'Default: %(default)s.')
     model_params.add_argument('--transformer-multiple-encoder-reps',
-                              type=int_greater_or_equal(1),
-                              nargs='+',
-                              default=[],
+                              type=multiple_values(greater_or_equal=1, data_type=int),
+                              default=(),
                               help='Enable the decoder to attend to representations from multiple specified encoder '
-                                   'layers by concatenating them in the sequence length dimension. This multiplies the '
-                                   'encoded sequence length by the number of specified layers and does not require '
-                                   'additional model parameters (Wang et al. 2020, arxiv.org/abs/2005.14187). '
-                                   'Default: %(default)s.')
+                                   'layers (x:y:...) by concatenating them in the sequence length dimension. This '
+                                   'multiplies the encoded sequence length by the number of specified layers and does '
+                                   'not require additional model parameters (Wang et al. 2020, '
+                                   'arxiv.org/abs/2005.14187). Default: %(default)s.')
 
     model_params.add_argument('--lhuc',
                               nargs="+",
