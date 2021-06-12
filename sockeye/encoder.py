@@ -444,7 +444,7 @@ def concat_encoder_reps(layer_reps: List[mx.nd.NDArray], valid_length: mx.nd.NDA
         # Use reshaping to apply a single take operation using the remapping
         # list
         concat_reps = concat_reps.reshape(shape=(batch_size * padded_rep_length * num_reps, model_size))
-        concat_reps = concat_reps.take(mx.nd.array(remap))
+        concat_reps = concat_reps.take(mx.nd.array(remap, ctx=concat_reps.context))
         concat_reps = concat_reps.reshape(shape=(batch_size, padded_rep_length * num_reps, model_size))
 
         return concat_reps, concat_valid_length
