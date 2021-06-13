@@ -18,7 +18,8 @@ import inspect
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import List, Optional, Set, Union
+from itertools import chain
+from typing import Iterable, List, Optional, Union
 
 import mxnet as mx
 
@@ -423,26 +424,27 @@ def concat_encoder_reps(layer_reps: List[mx.nd.NDArray], valid_length: mx.nd.NDA
         # batch), all content encodings are followed by all padding encodings,
         # otherwise preserving order.
         remap = []  # type: List[int]
-        for seq_num, vlen in enumerate(valid_length):
-            # Start position in reshaped batch
-            seq_start = seq_num * padded_rep_length * num_reps
-            # Actual length of each representation in the current sequence
-            valid_rep_length = int(vlen.asscalar())
-            # Indices for remapping the current sequence
-            valid_indices = []  # type: List[int]
-            pad_indices = []  # type: List[int]
-            for rep_num in range(num_reps):
-                # Track positions of encoded content vs padding for the current
-                # representation within the current sequence
-                i = seq_start + rep_num * padded_rep_length
-                j = i + valid_rep_length
-                k = j + (padded_rep_length - valid_rep_length)
-                valid_indices.extend(range(i, j))
-                pad_indices.extend(range(j, k))
-            remap.extend(valid_indices)
-            remap.extend(pad_indices)
-        # Use reshaping to apply a single take operation using the remapping
-        # list
+        content_start = padding_start = padding_end = 0
+        # Loop over sequences
+        for vlen in valid_length:
+            content_length = int(vlen.asscalar())
+            padding_length = padded_rep_length - content_length
+            content_indices = []  # type: List[Iterable[int]]
+            padding_indices = []  # type: List[Iterable[int]]
+            # Loop over representations
+            for _ in range(num_reps):
+                # Record positions of encoded content and padding for the
+                # current representation within the current sequence
+                padding_start = content_start + content_length
+                padding_end = padding_start + padding_length
+                content_indices.append(range(content_start, padding_start))
+                padding_indices.append(range(padding_start, padding_end))
+                # Next rep or sequence start
+                content_start = padding_end
+            # Add indices for remapping this sequence
+            for indices in chain(content_indices, padding_indices):
+                remap.extend(indices)
+        # Use reshaping to apply a single take operation using the remap list
         concat_reps = concat_reps.reshape(shape=(batch_size * padded_rep_length * num_reps, model_size))
         concat_reps = concat_reps.take(mx.nd.array(remap, ctx=concat_reps.context))
         concat_reps = concat_reps.reshape(shape=(batch_size, padded_rep_length * num_reps, model_size))
