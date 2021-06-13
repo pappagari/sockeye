@@ -18,8 +18,7 @@ import inspect
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from itertools import chain
-from typing import Iterable, List, Optional, Union
+from typing import List, Optional, Union
 
 import mxnet as mx
 
@@ -321,11 +320,6 @@ class TransformerEncoder(Encoder, mx.gluon.HybridBlock):
 
 
     def hybrid_forward(self, F, data, valid_length):
-        """
-        Returns encoded data (NDArray/Symbol for single representation or list
-        of NDArrays/Symbols for multiple representations) and valid sequence
-        lengths
-        """
         # positional embedding
         data = self.pos_embedding(data, None)
 
@@ -347,109 +341,25 @@ class TransformerEncoder(Encoder, mx.gluon.HybridBlock):
             if layer_num in self.layer_reps_to_return:
                 layer_data.append(data)
 
-        # Apply final processing to each representation
-        layer_data = [self.final_process(data, None) for data in layer_data]
-        layer_data = [F.transpose(data, axes=(1, 0, 2)) for data in layer_data]
+        # For multiple encoder representations, interleave layer data in the
+        # seq_len dimension. For a single representation (default), use that
+        # layer's data directly.
+        if len(layer_data) > 1:
+            data = layers.interleave(F, layer_data, axis=0)
+            valid_length = valid_length * len(layer_data)
+        else:
+            data = layer_data[0]
 
-        if self.config.multiple_encoder_reps:
-            # List of representations
-            return layer_data, valid_length
+        data = self.final_process(data, None)
+        data = F.transpose(data, axes=(1, 0, 2))
 
-        # Default: single representation
-        return layer_data[0], valid_length
+        return data, valid_length
 
     def get_num_hidden(self) -> int:
         """
         Return the representation size of this encoder.
         """
         return self.config.model_size
-
-
-def concat_encoder_reps(layer_reps: List[mx.nd.NDArray], valid_length: mx.nd.NDArray):
-        """
-        Concatenate multiple encoder representations in the seq_len dimension
-        and update valid_length to match. Reorder each resulting sequence so
-        that all content encodings are consolidated to the left, followed by all
-        padding encodings. Consolidation is required for valid_length to be
-        meaningful and thus for decoder attention layers to work properly.
-
-        Example:
-
-        input = [[a b <pad> <pad>]
-                 [c d e <pad>]]
-
-        valid_length = [2, 3]
-
-        Output of an encoder that returns representations from layers 1 and 2,
-        where a_l1 is the encoding of token "a" from layer 1, etc.:
-
-        layer_reps = [[[a_l1 b_l1 <pad>_l1 <pad>_l1]
-                       [c_l1 d_l1 e_l1 <pad>_l1]],
-                      [[a_l2 b_l2 <pad>_l2 <pad>_l2]
-                       [c_l2 d_l2 e_l2 <pad>_l2]]]
-
-        Output of this function:
-
-        concat_layer_reps =
-            [[a_l1 b_l1 a_l2 b_l2 <pad>_l1 <pad>_l1 <pad>_l2 <pad>_l2]
-             [c_l1 d_l1 e_l1 c_l2 d_l2 e_l2 <pad>_l1 <pad>_l2]]
-
-        concat_valid_length = [4, 6]
-
-        :param layer_reps: Encoded data from `hybrid_forward`. List of NDArrays
-                           with shape (batch_size, seq_len, model_size)
-        :param valid_length: Encoded data lengths from `hybrid_forward`. NDArray
-                             with shape (batch_size)
-        :return: Concatenated data. NDArray with shape
-                 (batch_size, seq_len * num_reps, model_size) where num_reps is
-                 len(layer_data)
-                 Updated valid_length. NDArray with shape (batch_size)
-        """
-        num_reps = len(layer_reps)
-        batch_size, padded_rep_length, model_size = layer_reps[0].shape
-        if num_reps == 1:
-            # Single representation; nothing to concat
-            return layer_reps[0], valid_length
-
-        # Concat N representations in seq_len dimension
-        concat_reps = mx.nd.concat(*layer_reps, dim=1)
-        concat_valid_length = valid_length * num_reps
-
-        if concat_reps.shape[0] == 1:
-            # Batch size 1: no padding encodings; nothing to remap
-            return concat_reps, concat_valid_length
-
-        # Build the list of indices that remaps encodings in a reshaped batch
-        # (batch_size * seq_len). For each sequence (span of seq_len in reshaped
-        # batch), all content encodings are followed by all padding encodings,
-        # otherwise preserving order.
-        remap = []  # type: List[int]
-        content_start = padding_start = padding_end = 0
-        # Loop over sequences
-        for vlen in valid_length:
-            content_length = int(vlen.asscalar())
-            padding_length = padded_rep_length - content_length
-            content_indices = []  # type: List[Iterable[int]]
-            padding_indices = []  # type: List[Iterable[int]]
-            # Loop over representations
-            for _ in range(num_reps):
-                # Record positions of encoded content and padding for the
-                # current representation within the current sequence
-                padding_start = content_start + content_length
-                padding_end = padding_start + padding_length
-                content_indices.append(range(content_start, padding_start))
-                padding_indices.append(range(padding_start, padding_end))
-                # Next rep or sequence start
-                content_start = padding_end
-            # Add indices for remapping this sequence
-            for indices in chain(content_indices, padding_indices):
-                remap.extend(indices)
-        # Use reshaping to apply a single take operation using the remap list
-        concat_reps = concat_reps.reshape(shape=(batch_size * padded_rep_length * num_reps, model_size))
-        concat_reps = concat_reps.take(mx.nd.array(remap, ctx=concat_reps.context))
-        concat_reps = concat_reps.reshape(shape=(batch_size, padded_rep_length * num_reps, model_size))
-
-        return concat_reps, concat_valid_length
 
 
 EncoderConfig = Union[transformer.TransformerConfig]

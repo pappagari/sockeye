@@ -13,9 +13,6 @@
 
 import pytest
 
-import mxnet as mx
-import numpy as np
-
 import sockeye.constants as C
 import sockeye.encoder
 import sockeye.transformer
@@ -60,22 +57,3 @@ def test_get_transformer_encoder(lhuc):
 
     assert type(encoder) == sockeye.encoder.TransformerEncoder
     assert encoder.prefix == prefix + C.TRANSFORMER_ENCODER_PREFIX
-
-
-def test_concat_encoder_reps():
-    # In this artificial data, encoded content has positive values and encoded
-    # padding has negative values.
-    layer_reps = [mx.nd.array([[[1, 2], [3, 4], [-1, -2], [-3, -4]],
-                               [[1, 2], [3, 4], [5, 6], [-1, -2]]]),
-                  mx.nd.array([[[5, 6], [7, 8], [-5, -6], [-7, -8]],
-                               [[7, 8], [9, 10], [11, 12], [-3, -4]]])]
-    valid_length = mx.nd.array([2, 3])
-
-    expected_concat_reps = mx.nd.array([[[1, 2], [3, 4], [5, 6], [7, 8], [-1, -2], [-3, -4], [-5, -6], [-7, -8]],
-                                        [[1, 2], [3, 4], [5, 6], [7, 8], [9, 10], [11, 12], [-1, -2], [-3, -4]]])
-    expected_concat_valid_length = mx.nd.array([4, 6])
-
-    concat_reps, concat_valid_length = sockeye.encoder.concat_encoder_reps(layer_reps, valid_length)
-
-    assert np.array_equal(concat_reps.asnumpy(), expected_concat_reps.asnumpy())
-    assert np.array_equal(concat_valid_length.asnumpy(), expected_concat_valid_length.asnumpy())

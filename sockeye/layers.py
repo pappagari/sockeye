@@ -15,7 +15,7 @@ import logging
 from abc import abstractmethod
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Optional, Union, Tuple
+from typing import List, Optional, Union, Tuple
 
 import mxnet as mx
 import numpy as np
@@ -279,7 +279,7 @@ class DotAttentionCell(mx.gluon.HybridBlock):
             probs = F.softmax(logits, axis=-1)
 
         probs = F.Dropout(probs, p=self.dropout) if self.dropout > 0.0 else probs
-        
+
         # key_values: (lk, n, dv * 2)
         # probs: (n*h, lq, lk)
         # result: (n, lq, dv)
@@ -304,6 +304,36 @@ def prepare_source_valid_lengths(F, valid_length, query_data, num_heads: int):
                                         query_data,
                                         lhs_axes=(1,), rhs_axes=(1,))
     return F.cast(att_valid_length, dtype='int32')
+
+
+def interleave(F,
+               data: List[Union[mx.nd.NDArray, mx.sym.Symbol]],
+               axis: int = 0) -> Union[mx.nd.NDArray, mx.sym.Symbol]:
+    """
+    Interleave inputs along a given axis.
+
+    Example: combine padded data such that valid_length is still meaningful
+
+    data = [[a b <pad1> <pad2>], [c d <pad1> <pad2>]]
+
+    valid_length = 2
+
+    interleave(F, data, axis=0) = [a c b d <pad1> <pad1> <pad2> <pad2>]
+
+    valid length * len(data) = 4
+
+    :param data: List of NDArrays/Symbols with the same shape.
+    :param axis: Axis along which to interleave inputs.
+    :return: NDArray/Symbol formed by interleaving the inputs. The size of the
+             specified axis is multiplied by the size of the input list. The
+             shape otherwise matches the uniform input shape.
+    """
+    data = F.stack(*data, axis=axis)
+    data = F.swapaxes(data, axis, axis + 1)
+    # Reshaping: 0: copy, -3: merge next two, -2: copy remaining (if any)
+    merge_axis_with_next = (0,) * axis + (-3, -2)
+    data = F.reshape(data, shape=merge_axis_with_next)
+    return data
 
 
 class MultiHeadAttentionBase(mx.gluon.HybridBlock):

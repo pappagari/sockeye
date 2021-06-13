@@ -114,3 +114,29 @@ def test_output_layer():
     assert output_restricted.shape == (2, 10, len(vocab_slice_ids))
 
     assert np.allclose(output_restricted, reduced_output)
+
+
+def test_interleave():
+    """
+    This corresponds to interleaving multiple encoder representations that
+    consist of content encodings (positive values) followed by padding encodings
+    (negative values).
+    """
+    # Initial data format (batch_size, seq_len, model_size)
+    data = [mx.nd.array([[[1, 2], [3, 4], [-1, -2], [-3, -4]],
+                         [[1, 2], [3, 4], [5, 6], [-1, -2]]]),
+            mx.nd.array([[[5, 6], [7, 8], [-5, -6], [-7, -8]],
+                         [[7, 8], [9, 10], [11, 12], [-3, -4]]])]
+
+    expected_result = mx.nd.array([[[1, 2], [5, 6], [3, 4], [7, 8], [-1, -2], [-5, -6], [-3, -4], [-7, -8]],
+                                   [[1, 2], [7, 8], [3, 4], [9, 10], [5, 6], [11, 12], [-1, -2], [-3, -4]]])
+
+    result = sockeye.layers.interleave(mx.nd, data, axis=1)
+    assert np.array_equal(result.asnumpy(), expected_result.asnumpy())
+
+    # Transposed format used in TransformerEncoder
+    data = [d.transpose(axes=(1, 0, 2)) for d in data]
+    expected_result = expected_result.transpose(axes=(1, 0, 2))
+
+    result = sockeye.layers.interleave(mx.nd, data, axis=0)
+    assert np.array_equal(result.asnumpy(), expected_result.asnumpy())

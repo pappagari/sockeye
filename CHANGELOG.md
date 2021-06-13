@@ -14,7 +14,8 @@ Each version section may have have subsections for: _Added_, _Changed_, _Removed
 ## [2.3.18]
 
 ### Added
-- Added option `--transformer-multiple-encoder-reps` to enable the decoder to attend to representations from multiple encoder layers by concatenating them in the sequence length dimension ([Wang et al., 2020](https://arxiv.org/abs/2005.14187)). This multiplies the encoded sequence length by the number of specified layers and does not require additional model parameters
+
+- Added option `--transformer-multiple-encoder-reps` to enable the decoder to attend to representations from multiple encoder layers by interleaving them in the sequence length dimension (equivalent to [Wang et al., 2020](https://arxiv.org/abs/2005.14187)). This multiplies the encoded sequence length by the number of specified layers and does not require additional model parameters
 
 ## [2.3.17]
 ### Added

@@ -730,9 +730,9 @@ def add_model_parameters(params):
                               type=multiple_values(greater_or_equal=1, data_type=int),
                               default=(),
                               help='Enable the decoder to attend to representations from multiple specified encoder '
-                                   'layers (x:y:...) by concatenating them in the sequence length dimension. This '
+                                   'layers (x:y:...) by interleaving them in the sequence length dimension. This '
                                    'multiplies the encoded sequence length by the number of specified layers and does '
-                                   'not require additional model parameters (Wang et al. 2020, '
+                                   'not require additional model parameters (equivalent to Wang et al. 2020, '
                                    'arxiv.org/abs/2005.14187). Default: %(default)s.')
 
     model_params.add_argument('--lhuc',
