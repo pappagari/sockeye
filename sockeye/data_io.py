@@ -1643,7 +1643,7 @@ class BaseParallelSampleIter(mx.io.DataIter):
         pass
 
     @abstractmethod
-    def next(self) -> 'Batch':
+    def next(self) -> 'SimpleBatch':
         pass
 
     @abstractmethod
@@ -1687,7 +1687,7 @@ class BatchedRawParallelSampleIter(BaseParallelSampleIter):
         self.sources_iters = [iter(s) for s in self.sources_sentences]
         self.targets_iters = [iter(s) for s in self.targets_sentences]
         self.max_len_source, self.max_len_target = max_lens
-        self.next_batch = None  # type: Optional[Batch]
+        self.next_batch = None  # type: Optional[SimpleBatch]
         self.sentno = 1
 
     def reset(self):
@@ -1735,12 +1735,15 @@ class BatchedRawParallelSampleIter(BaseParallelSampleIter):
 
         dataset = self.data_loader.load(sources_sentences, targets_sentences, [num_read])
 
-        source = dataset.source[0]
-        target, label = create_target_and_shifted_label_sequences(dataset.target[0])
-        self.next_batch = create_batch_from_parallel_sample(source, target, label)
+        self.next_batch = SimpleBatch(source=dataset.source[0], target_and_label=dataset.target[0])
         return True
 
-    def next(self) -> mx.io.DataBatch:
+        # source = dataset.source[0]
+        # target, label = create_target_and_shifted_label_sequences(dataset.target[0])
+        # self.next_batch = create_batch_from_parallel_sample(source, target, label)
+        # return True
+
+    def next(self) -> 'SimpleBatch':
         """
         Returns the next batch.
         """
@@ -1909,7 +1912,7 @@ class ParallelSampleIter(BaseParallelSampleIter):
         """
         return self.curr_batch_index != len(self.batch_indices)
 
-    def next(self) -> 'Batch':
+    def next(self) -> 'SimpleBatch':
         """
         Returns the next batch from the data iterator.
         """
@@ -1920,9 +1923,11 @@ class ParallelSampleIter(BaseParallelSampleIter):
         self.curr_batch_index += 1
 
         batch_size = self.bucket_batch_sizes[i].batch_size
-        source = self.data.source[i][j:j + batch_size]
-        target, label = create_target_and_shifted_label_sequences(self.data.target[i][j:j + batch_size])
-        return create_batch_from_parallel_sample(source, target, label)
+        #source = self.data.source[i][j:j + batch_size]
+        #target, label = create_target_and_shifted_label_sequences(self.data.target[i][j:j + batch_size])
+        return SimpleBatch(source=self.data.source[i][j:j + batch_size],
+                           target_and_label=self.data.target[i][j:j + batch_size])
+        #return create_batch_from_parallel_sample(source, target, label)
 
     def save_state(self, fname: str):
         """
@@ -1971,6 +1976,32 @@ class ParallelSampleIter(BaseParallelSampleIter):
         self.data = self.data.permute(self.data_permutations)
 
 
+@dataclass
+class SimpleBatch:
+
+    def __init__(self, source, target_and_label):
+        self.source = source
+        self.target_and_label = target_and_label
+        if isinstance(source, mx.nd.NDArray):
+            self.source_shape = source.shape
+            self.samples = self.source_shape[0]
+            self.tokens = self.samples * self.source_shape[1]
+        else:
+            self.source_shape = None
+            self.samples = 0
+            self.tokens = 0
+
+    def split_and_load(self, ctx: List[mx.context.Context]) -> 'SimpleBatch':
+        source = mx.gluon.utils.split_and_load(self.source, ctx, batch_axis=0)
+        target_and_label = mx.gluon.utils.split_and_load(self.target_and_label, ctx, batch_axis=0)
+        return SimpleBatch(source, target_and_label)
+
+    def shards(self) -> Iterable[Tuple[Tuple]]:
+        for shard in zip(self.source, self.target_and_label):
+            yield shard
+
+
+
 class Batch:
 
     __slots__ = ['source', 'source_length', 'target', 'target_length', 'labels', 'samples', 'tokens']
@@ -2008,6 +2039,44 @@ def create_target_and_shifted_label_sequences(target_and_label: mx.nd.NDArray) -
     target = mx.nd.where(target == C.EOS_ID, mx.nd.zeros_like(target), target)  # replace other <eos>'s with <pad>
     label = target_and_label[:, 1:, :]  # label skips <bos>
     return target, label
+
+
+class BatchBuilder(mx.gluon.HybridBlock):
+
+    def __init__(self, num_target_factors):
+        super().__init__()
+        self.num_target_factors = num_target_factors
+
+    def hybrid_forward(self, F, source, target_and_label):
+        # skip last column (for longest-possible sequence, this already removes <eos>)
+        target = F.slice(target_and_label, begin=(None, 0, None), end=(None, -1, None))
+        target = F.where(target == C.EOS_ID, F.zeros_like(target), target)  # replace other <eos>'s with <pad>
+        label = F.slice(target_and_label, begin=(None, 1, None), end=(None, None, None))  # label skips <bos>
+
+        source_words = F.squeeze(F.slice(source, begin=(None, None, 0), end=(None, None, 1)), axis=2)
+        source_length = F.sum(source_words != C.PAD_ID, axis=1)
+        target_words = F.squeeze(F.slice(target, begin=(None, None, 0), end=(None, None, 1)), axis=2)
+        target_length = F.sum(target_words != C.PAD_ID, axis=1)
+        length_ratio = source_length / target_length
+
+        primary_label, *factor_labels = F.split(label, num_outputs=self.num_target_factors, axis=2, squeeze_axis=True)
+
+        return source, source_length, target, target_length, length_ratio, primary_label, factor_labels
+
+    def forward(self, source, target_and_label):
+        source, source_length, target, target_length, length_ratio, primary_label, factor_labels = super().forward(source,
+                                                                                                     target_and_label)
+
+        source_shape = source.shape
+        samples = source_shape[0]
+        tokens = source_shape[1] * samples
+
+        labels = {C.LENRATIO_LABEL_NAME: length_ratio}
+        labels[C.TARGET_LABEL_NAME] = primary_label
+        labels.update({C.TARGET_FACTOR_LABEL_NAME % i: label for i, label in enumerate(factor_labels, 1)})
+
+        return Batch(source, source_length, target, target_length, labels, samples, tokens)
+
 
 
 def create_batch_from_parallel_sample(source: mx.nd.NDArray, target: mx.nd.NDArray, label: mx.nd.NDArray) -> Batch:

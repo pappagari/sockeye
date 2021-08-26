@@ -171,8 +171,11 @@ class GluonEarlyStoppingTrainer:
         self.context = context
         self.dtype = dtype
         self.using_amp = using_amp
+        self._batch_builder = data_io.BatchBuilder(num_target_factors=sockeye_model.num_target_factors)
+        self._batch_builder.hybridize(static_alloc=True)
         self._parallel = parallel.Parallel(len(context) if len(context) > 1 else 0,
-                                           ParallelModel(sockeye_model,
+                                           ParallelModel(self._batch_builder,
+                                                         sockeye_model,
                                                          loss_functions,
                                                          trainer,
                                                          using_amp=using_amp))
@@ -303,7 +306,7 @@ class GluonEarlyStoppingTrainer:
         if self.checkpoint_callback:
             self.checkpoint_callback(self.state.checkpoint)
 
-    def _forward_backward(self, batch: data_io.Batch):
+    def _forward_backward(self, batch: data_io.SimpleBatch):
         """
         Performs forward-backward pass on a batch in data-parallel mode.
 
@@ -314,8 +317,8 @@ class GluonEarlyStoppingTrainer:
         batch = batch.split_and_load(ctx=self.context)
 
         # send sharded inputs to the backend
-        for inputs, labels in batch.shards():
-            self._parallel.put((inputs, labels))
+        for shard in batch.shards():
+            self._parallel.put(shard)
 
         # get outputs from parallel requests to the backend. Each shard output contains a list of tuples, one for each
         # loss function of the form: (loss_value, num_samples).
@@ -330,7 +333,7 @@ class GluonEarlyStoppingTrainer:
             sharded_outputs_per_loss_function]
         return output_per_loss_function
 
-    def _step(self, batch: data_io.Batch) -> bool:
+    def _step(self, batch: data_io.SimpleBatch) -> bool:
         self.state.batches += 1
         loss_outputs = self._forward_backward(batch)
 
@@ -362,10 +365,13 @@ class GluonEarlyStoppingTrainer:
         """
         data_iter.reset()
         val_metrics = [lf.create_metric() for lf in self.loss_functions]
-        for batch in data_iter:
-            batch = batch.split_and_load(ctx=self.context)
+        for simple_batch in data_iter:
+            simple_batch = simple_batch.split_and_load(ctx=self.context)
             sharded_loss_outputs = []  # type: List[List[Tuple[mx.nd.NDArray, mx.nd.NDArray]]]
-            for inputs, labels in batch.shards():
+            for source, target_and_label in simple_batch.shards():
+                batch = self._batch_builder(source, target_and_label)
+                inputs = (batch.source, batch.source_length, batch.target, batch.target_length)
+                labels = batch.labels
                 outputs = self.model(*inputs)  # type: Dict[str, mx.nd.NDArray]
                 loss_outputs = [loss_function(outputs, labels) for loss_function in self.loss_functions]
                 sharded_loss_outputs.append(loss_outputs)
@@ -741,10 +747,12 @@ class GluonEarlyStoppingTrainer:
 class ParallelModel(parallel.Parallelizable):
 
     def __init__(self,
+                 batch_builder: data_io.BatchBuilder,
                  model: Callable,
                  loss_functions: List[loss.Loss],
                  trainer: mx.gluon.Trainer,
                  using_amp: bool = False) -> None:
+        self.batch_builder = batch_builder
         self.model = model
         self.loss_functions = loss_functions
         self.trainer = trainer
@@ -754,7 +762,10 @@ class ParallelModel(parallel.Parallelizable):
         """
         Applies forward-backward pass for a single shard of a batch (data-parallel training).
         """
-        inputs, labels = shard
+        source, target_and_label = shard
+        batch = self.batch_builder(source, target_and_label)
+        inputs = (batch.source, batch.source_length, batch.target, batch.target_length)
+        labels = batch.labels
         with mx.autograd.record():
             outputs = self.model(*inputs)  # type: Dict[str, mx.nd.NDArray]
             loss_outputs = [loss_function(outputs, labels) for loss_function in self.loss_functions]
