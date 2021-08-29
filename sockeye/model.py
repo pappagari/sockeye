@@ -11,6 +11,7 @@
 # express or implied. See the License for the specific language governing
 # permissions and limitations under the License.
 
+import collections
 import copy
 import time
 import logging
@@ -338,7 +339,8 @@ class SockeyeModel(mx.gluon.Block):
                         allow_missing: bool = False,
                         ignore_extra: bool = False,
                         cast_dtype: bool = False,
-                        dtype_source: str = 'current'):
+                        dtype_source: str = 'current',
+                        feed_forward_compress: Optional[str] = None):
         """Load parameters from file previously saved by `save_parameters`.
 
         Parameters
@@ -367,8 +369,61 @@ class SockeyeModel(mx.gluon.Block):
         utils.check_condition(os.path.exists(filename), "No model parameter file found under %s. "
                                                      "This is either not a model directory or the first training "
                                                      "checkpoint has not happened yet." % filename)
-        super().load_parameters(filename, ctx=ctx, allow_missing=allow_missing, ignore_extra=ignore_extra,
-                                cast_dtype=cast_dtype, dtype_source=dtype_source)
+
+        loaded = mx.nd.load(filename)
+        params = self._collect_params_with_prefix()
+        if not loaded and not params:
+            return
+
+        if not allow_missing:
+            # Shared parameters are stored only a single time as of MXNet 1.6.
+            # We thus retrieve all prefixes (through _collect_params_with_prefix)
+            # that a shared parameter is used with. Check that there are no
+            # missing parameters that were not yet already loaded from the
+            # shared version.
+            params_inv = collections.defaultdict(list)
+            for k, v in params.items():
+                params_inv[v].append(k)
+
+            for name, param in params.items():
+                assert any(p in loaded for p in params_inv[param]), \
+                    "Parameter '%s' is missing in file '%s', which contains parameters: %s. " \
+                    "Set allow_missing=True to ignore missing parameters."%(
+                        name, filename, mx.gluon.utils._brief_print_list(loaded.keys()))
+
+        # Initialize compressed feed forward layers
+        for name in list(loaded):
+            if feed_forward_compress is not None and \
+                (params[name].name.endswith("_ff_h2o_bias") or params[name].name.endswith("_ff_h2o_weight") or
+                    params[name].name.endswith("_ff_i2h_bias") or params[name].name.endswith("_ff_i2h_weight")):
+                if feed_forward_compress == C.FEED_FORWARD_COMPRESS_INITIALIZE_REINIT:
+                    loaded.pop(name)
+                elif feed_forward_compress == C.FEED_FORWARD_COMPRESS_INITIALIZE_FIRST:
+                    if params[name].name.endswith("_ff_i2h_weight") or params[name].name.endswith("_ff_i2h_bias"):
+                        loaded[name] = loaded[name][:params[name].shape[0]]
+                    elif params[name].name.endswith("_ff_h2o_weight"):
+                        loaded[name] = loaded[name][:, :params[name].shape[1]]
+                elif feed_forward_compress == C.FEED_FORWARD_COMPRESS_INITIALIZE_MAX:
+                    if params[name].shape != loaded[name].shape:
+                        prefix = '.'.join(name.split('.')[:-2])
+                        h2o_arg_sort = loaded[prefix + '.ff2.weight'].abs().sum(axis=0).argsort(axis=0, is_ascend=False)
+                        h2o_take = h2o_arg_sort[:params[prefix + '.ff2.weight'].shape[1]]
+                        loaded[prefix + '.ff2.weight'] = loaded[prefix + '.ff2.weight'].take(h2o_take, axis=1)
+                        loaded[prefix + '.ff1.bias'] = loaded[prefix + '.ff1.bias'].take(h2o_take, axis=0)
+                        loaded[prefix + '.ff1.weight'] = loaded[prefix + '.ff1.weight'].take(h2o_take, axis=0)
+                else:
+                    raise ValueError('Unknown value for feed_forward_compress_initialize: %s'
+                                     % feed_forward_compress_initialize)
+
+        for name in loaded:
+            if not ignore_extra and name not in params:
+                raise ValueError(
+                    "Parameter '%s' loaded from file '%s' is not present in ParameterDict, " \
+                    "which contains parameters %s. Set ignore_extra=True to ignore. "%(
+                        name, filename, mx.gluon.utils._brief_print_list(self._params.keys())))
+            if name in params:
+                params[name]._load_init(loaded[name], ctx, cast_dtype=cast_dtype, dtype_source=dtype_source)
+
         logger.info('Loaded params from "%s" to "%s"', filename, mx.cpu() if ctx is None else ctx)
 
     def set_parameters(self,

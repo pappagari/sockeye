@@ -1065,7 +1065,8 @@ def train(args: argparse.Namespace, custom_metrics_logger: Optional[Callable] = 
                                            allow_missing=args.allow_missing_params or model_config.lhuc,
                                            ignore_extra=args.ignore_extra_params,
                                            cast_dtype=True,
-                                           dtype_source='current')
+                                           dtype_source='current',
+                                           feed_forward_compress=args.transformer_feed_forward_compress)
         params = training_model.collect_params()
         # set grad_req for fixed params
         params = set_grad_req_for_fixed_params(config=model_config,
