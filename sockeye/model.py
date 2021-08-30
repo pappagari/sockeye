@@ -393,7 +393,7 @@ class SockeyeModel(mx.gluon.Block):
 
         # Initialize compressed feed forward layers
         for name in list(loaded):
-            if feed_forward_compress is not None and \
+            if feed_forward_compress is not None and name in params and \
                 (params[name].name.endswith("_ff_h2o_bias") or params[name].name.endswith("_ff_h2o_weight") or
                     params[name].name.endswith("_ff_i2h_bias") or params[name].name.endswith("_ff_i2h_weight")):
                 if feed_forward_compress == C.FEED_FORWARD_COMPRESS_INITIALIZE_REINIT:
