@@ -41,6 +41,7 @@ class TransformerConfig(config.Config):
     use_lhuc: bool = False
     depth_key_value: int = 0
     use_glu: bool = False
+    custom_layers: Optional[str] = None
 
 
 class TransformerEncoderBlock(mx.gluon.HybridBlock):
@@ -52,52 +53,58 @@ class TransformerEncoderBlock(mx.gluon.HybridBlock):
     def __init__(self,
                  config: TransformerConfig,
                  prefix: str,
-                 dtype: str) -> None:
+                 dtype: str,
+                 use_self_attention: bool = True,
+                 use_feed_forward: bool = True) -> None:
         super().__init__(prefix=prefix)
-
+        self.use_self_attention = use_self_attention
+        self.use_feed_forward = use_feed_forward
         with self.name_scope():
-            self.pre_self_attention = TransformerProcessBlock(sequence=config.preprocess_sequence,
-                                                              dropout=config.dropout_prepost,
-                                                              prefix="att_self_pre_",
-                                                              num_hidden=config.model_size)
-            self.self_attention = layers.MultiHeadSelfAttention(depth_att=config.model_size,
-                                                                heads=config.attention_heads,
-                                                                depth_out=config.model_size,
-                                                                dropout=config.dropout_attention,
-                                                                prefix="att_self_",
-                                                                dtype=dtype)
-            self.post_self_attention = TransformerProcessBlock(sequence=config.postprocess_sequence,
-                                                               dropout=config.dropout_prepost,
-                                                               prefix="att_self_post_",
-                                                               num_hidden=config.model_size)
-
-            self.pre_ff = TransformerProcessBlock(sequence=config.preprocess_sequence,
-                                                  dropout=config.dropout_prepost,
-                                                  prefix="ff_pre_",
-                                                  num_hidden=config.model_size)
-            self.ff = TransformerFeedForward(num_hidden=config.feed_forward_num_hidden,
-                                             num_model=config.model_size,
-                                             act_type=config.act_type,
-                                             dropout=config.dropout_act,
-                                             prefix="ff_",
-                                             dtype=dtype,
-                                             use_glu=config.use_glu)
-            self.post_ff = TransformerProcessBlock(sequence=config.postprocess_sequence,
-                                                   dropout=config.dropout_prepost,
-                                                   prefix="ff_post_",
-                                                   num_hidden=config.model_size)
+            if self.use_self_attention:
+                self.pre_self_attention = TransformerProcessBlock(sequence=config.preprocess_sequence,
+                                                                 dropout=config.dropout_prepost,
+                                                                 prefix="att_self_pre_",
+                                                                 num_hidden=config.model_size)
+                self.self_attention = layers.MultiHeadSelfAttention(depth_att=config.model_size,
+                                                                    heads=config.attention_heads,
+                                                                    depth_out=config.model_size,
+                                                                    dropout=config.dropout_attention,
+                                                                    prefix="att_self_",
+                                                                    dtype=dtype)
+                self.post_self_attention = TransformerProcessBlock(sequence=config.postprocess_sequence,
+                                                                   dropout=config.dropout_prepost,
+                                                                   prefix="att_self_post_",
+                                                                   num_hidden=config.model_size)
+            if self.use_feed_forward:
+                self.pre_ff = TransformerProcessBlock(sequence=config.preprocess_sequence,
+                                                      dropout=config.dropout_prepost,
+                                                      prefix="ff_pre_",
+                                                      num_hidden=config.model_size)
+                self.ff = TransformerFeedForward(num_hidden=config.feed_forward_num_hidden,
+                                                 num_model=config.model_size,
+                                                 act_type=config.act_type,
+                                                 dropout=config.dropout_act,
+                                                 prefix="ff_",
+                                                 dtype=dtype,
+                                                 use_glu=config.use_glu)
+                self.post_ff = TransformerProcessBlock(sequence=config.postprocess_sequence,
+                                                       dropout=config.dropout_prepost,
+                                                       prefix="ff_post_",
+                                                       num_hidden=config.model_size)
             self.lhuc = None
             if config.use_lhuc:
                 self.lhuc = layers.LHUC(config.model_size)
 
     def hybrid_forward(self, F, data: mx.sym.Symbol, lengths: mx.sym.Symbol) -> mx.sym.Symbol:
         # self-attention
-        data_self_att, _ = self.self_attention(self.pre_self_attention(data, None), None, lengths, None)
-        data = self.post_self_attention(data_self_att, data)
+        if self.use_self_attention:
+            data_self_att, _ = self.self_attention(self.pre_self_attention(data, None), None, lengths, None)
+            data = self.post_self_attention(data_self_att, data)
 
         # feed-forward
-        data_ff = self.ff(self.pre_ff(data, None))
-        data = self.post_ff(data_ff, data)
+        if self.use_feed_forward:
+            data_ff = self.ff(self.pre_ff(data, None))
+            data = self.post_ff(data_ff, data)
 
         if self.lhuc is not None:
             data = self.lhuc(data)

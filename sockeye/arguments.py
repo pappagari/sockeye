@@ -675,6 +675,11 @@ def add_model_parameters(params):
                                    'Use "x:x" to specify separate values for encoder & decoder. Default: %(default)s.')
 
     # transformer arguments
+    model_params.add_argument('--transformer-custom-layers',
+                              type=str,
+                              default=None,
+                              help='Specify [s]elf-attention and [f]eed-forward. Ex: "sfsfsf" '
+                                   'Default: %(default)s.')
     model_params.add_argument('--transformer-model-size',
                               type=multiple_values(num_values=2, greater_or_equal=1),
                               default=(512, 512),
