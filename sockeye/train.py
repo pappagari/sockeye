@@ -886,7 +886,11 @@ def fixed_param_names_from_stragegy(config: model.ModelConfig,
             return not name.startswith(C.DEFAULT_OUTPUT_LAYER_PREFIX)
         if strategy == C.FIXED_PARAM_STRATEGY_ALL_EXCEPT_FEED_FORWARD:
             return not (name.endswith("_ff_h2o_bias") or name.endswith("_ff_h2o_weight") or
-                        name.endswith("_ff_i2h_bias") or name.endswith("_ff_i2h_weight"))
+                        name.endswith("_ff_i2h_bias") or name.endswith("_ff_i2h_weight") or
+                        name.endswith("_ff_post_norm_beta") or name.endswith("_ff_post_norm_gamma") or
+                        name.endswith("_att_self_pre_norm_beta") or name.endswith("_att_self_pre_norm_gamma") or
+                        name.endswith("_ssru_pre_norm_beta") or name.endswith("_ssru_pre_norm_gamma") or
+                        name.endswith("_final_process_norm_beta") or name.endswith("_final_process_norm_gamma"))
         if strategy == C.FIXED_PARAM_STRATEGY_ENCODER_AND_SOURCE_EMBEDDINGS:
             return name.startswith(C.ENCODER_PREFIX) or name.startswith(C.SOURCE_EMBEDDING_PREFIX)
         if strategy == C.FIXED_PARAM_STRATEGY_ENCODER_HALF_AND_SOURCE_EMBEDDINGS:
