@@ -29,6 +29,7 @@ class OptimizerConfig(config.Config):
     gradient_clipping_type: str
     gradient_clipping_threshold: Optional[float]
     update_interval: int = 1
+    state_reset_interval: Optional[int] = None
 
     @property
     def lr_scheduler(self) -> Optional[LearningRateScheduler]:

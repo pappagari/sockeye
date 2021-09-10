@@ -246,6 +246,11 @@ class GluonEarlyStoppingTrainer:
                 self.state.epoch += 1
                 train_iter.reset()
 
+            if self.optimizer_config.state_reset_interval is not None \
+                and self.state.updates > 0 and self.state.batches % (
+                    self.optimizer_config.state_reset_interval * self.config.update_interval) == 0:
+                self._zero_optimizer_states()
+
             if self.state.updates > 0 and self.state.batches % (
                     self.config.checkpoint_interval * self.config.update_interval) == 0:
                 time_cost = time.time() - tic
@@ -712,6 +717,25 @@ class GluonEarlyStoppingTrainer:
                 os.remove(self.best_optimizer_states_fname)
             if os.path.exists(self.best_lr_scheduler_fname):
                 os.remove(self.best_lr_scheduler_fname)
+
+    def _zero_optimizer_states(self):
+        """
+        Set the all Updaters' optimizer states to zero, equivalent to resetting
+        momentum for SGD/Adam.
+        """
+        updaters = [self.trainer._kvstore._updater] if self.trainer._update_on_kvstore else self.trainer._updaters
+        for updater in updaters:
+            # Each Updater has a dict of optimizer states
+            for state in updater.states.values():
+                # Each state is a NDArray or list/tuple of NDArrays
+                if isinstance(state, (list, tuple)):
+                    for values in state:
+                        values[:] = 0
+                else:
+                    state[:] = 0
+                # Mark states as requiring sync after setting values
+                updater.states_synced = dict.fromkeys(updater.states.keys(), False)
+        logger.info('Reset optimizer states')
 
     @property
     def metrics_fname(self) -> str:

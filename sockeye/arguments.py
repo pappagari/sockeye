@@ -973,6 +973,11 @@ def add_training_args(params):
                               type=simple_dict(),
                               default=None,
                               help='Additional optimizer params as dictionary. Format: key1:value1,key2:value2,...')
+    train_params.add_argument('--optimizer-reset-interval',
+                              type=int_greater_or_equal(1),
+                              default=None,
+                              help='Reset optimizer state to zero every N steps. This is equivalent to resetting '
+                                   'momentum for SGD/Adam. Default: %(default)s.')
 
     train_params.add_argument('--horovod',
                               action='store_true',

@@ -822,7 +822,8 @@ def create_optimizer_config(args: argparse.Namespace) -> OptimizerConfig:
                              initializer=weight_init,
                              gradient_clipping_type=gradient_clipping_type,
                              gradient_clipping_threshold=gradient_clipping_threshold,
-                             update_interval=args.update_interval)
+                             update_interval=args.update_interval,
+                             state_reset_interval=args.optimizer_reset_interval)
     config.set_lr_scheduler(lr_sched)
     logger.info("Optimizer: %s | kvstore=%s | params=%s | initializer=%s",
                 config.name, config.kvstore, config.params, config.initializer)
