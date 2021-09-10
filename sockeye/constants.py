@@ -1,4 +1,4 @@
-# Copyright 2017--2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# Copyright 2017--2021 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"). You may not
 # use this file except in compliance with the License. A copy of the License
@@ -365,6 +365,8 @@ DEFAULT_NUM_STD_MAX_OUTPUT_LENGTH = 2
 DTYPE_INT8 = 'int8'
 DTYPE_FP16 = 'float16'
 DTYPE_FP32 = 'float32'
+DTYPES = [DTYPE_FP32, DTYPE_FP16, DTYPE_INT8]
+
 LARGE_POSITIVE_VALUE = 99999999.
 LARGE_NEGATIVE_VALUE = -LARGE_POSITIVE_VALUE
 LARGE_VALUES = {

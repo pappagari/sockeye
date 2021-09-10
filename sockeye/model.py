@@ -1,4 +1,4 @@
-# Copyright 2017--2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# Copyright 2017--2021 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"). You may not
 # use this file except in compliance with the License. A copy of the License
@@ -302,13 +302,17 @@ class SockeyeModel(mx.gluon.Block):
 
         return predicted_output_length
 
-    def save_config(self, folder: str):
+    def save_config(self, folder: str, dtype: Optional[str] = None):
         """
         Saves model configuration to <folder>/config
 
         :param folder: Destination folder.
+        :param dtype: Optional dtype override.
         """
         fname = os.path.join(folder, C.CONFIG_NAME)
+        if dtype is not None:
+            utils.check_condition(dtype in C.DTYPES, 'Unsupported dtype: %s. Choices: %s' % (dtype, ' '.join(C.DTYPES)))
+            self.config.dtype = dtype
         self.config.save(fname)
         logger.info('Saved model config to "%s"', fname)
 
