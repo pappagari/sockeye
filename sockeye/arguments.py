@@ -855,6 +855,34 @@ def add_training_args(params):
                               type=float,
                               help='Smoothing constant for label smoothing. Default: %(default)s.')
 
+    train_params.add_argument('--scheduled-sampling',
+                              choices=C.SCHEDULED_SAMPLING_CHOICES,
+                              default=None,
+                              help='Train the model on a mixture of true target tokens and its own predictions (Bengio '
+                                   'et al. 2015, arxiv.org/abs/1506.03099; Mihaylova and Martins 2019, '
+                                   'arxiv.org/abs/1906.07651). Decoder inputs are mixed targets while labels are '
+                                   'always true targets. Full mode: generate predictions step by step as described by '
+                                   'Bengio et al. Fast mode: generate all predictions in parallel using the true '
+                                   'target as input as described by Mihaylova and Martins. Default: %(default)s.')
+    train_params.add_argument('--scheduled-sampling-eval',
+                              action='store_true',
+                              default=False,
+                              help='Also use scheduled sampling when computing loss on validation data. Use a '
+                                   'constant sampling rate of 1 (always evaluate on full model predictions). '
+                                   'Default: %(default)s.')
+    train_params.add_argument('--scheduled-sampling-rate',
+                              type=float_greater_or_equal(0),
+                              default=0,
+                              help='Rate for choosing model predictions instead of true target tokens. N=0 corresponds '
+                                   'to regular training while N=1 corresponds to always using model predictions. '
+                                   'Default: %(default)s.')
+    train_params.add_argument('--scheduled-sampling-warmup',
+                              type=int_greater_or_equal(0),
+                              default=0,
+                              help='When N>0, linearly increase the scheduled sampling rate from zero to the specified '
+                                   'rate over the first N training steps. Default: %(default)s.')
+
+
     train_params.add_argument('--length-task',
                               type=str,
                               default=None,

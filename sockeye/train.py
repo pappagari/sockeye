@@ -1051,7 +1051,11 @@ def train(args: argparse.Namespace, custom_metrics_logger: Optional[Callable] = 
             max_epochs=args.max_num_epochs,
             max_seconds=args.max_seconds,
             update_interval=args.update_interval,
-            stop_training_on_decoder_failure=args.stop_training_on_decoder_failure
+            stop_training_on_decoder_failure=args.stop_training_on_decoder_failure,
+            scheduled_sampling=args.scheduled_sampling,
+            scheduled_sampling_eval=args.scheduled_sampling_eval,
+            scheduled_sampling_rate=args.scheduled_sampling_rate,
+            scheduled_sampling_warmup=args.scheduled_sampling_warmup
         )
         if trainer_config.min_epochs is not None and trainer_config.max_epochs is not None:
             check_condition(trainer_config.min_epochs <= trainer_config.max_epochs,

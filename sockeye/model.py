@@ -262,13 +262,29 @@ class SockeyeModel(mx.gluon.Block):
 
         return step_output, new_states, target_factor_outputs
 
-    def forward(self, source, source_length, target, target_length):  # pylint: disable=arguments-differ
+    def forward(self,
+                source: mx.nd.NDArray,
+                source_length: mx.nd.NDArray,
+                target: mx.nd.NDArray,
+                target_length: mx.nd.NDArray,
+                scheduled_sampling: Optional[str] = None,
+                scheduled_sampling_rate: float = 0):  # pylint: disable=arguments-differ
         # When updating only the decoder (specified directly or implied by
         # caching the encoder and embedding forward passes), turn off autograd
         # for the encoder and embeddings to save memory.
         with mx.autograd.pause() if self.train_decoder_only or self.forward_pass_cache_size > 0 else utils.no_context():
             source_encoded, source_encoded_length, target_embed, states = self.embed_and_encode(source, source_length,
                                                                                                 target, target_length)
+
+        if scheduled_sampling is not None and scheduled_sampling_rate > 0:
+            if scheduled_sampling == C.SCHEDULED_SAMPLING_FULL:
+                target_embed = self._scheduled_sampling_full(source_encoded, source_encoded_length, target,
+                                                             target_length, rate=scheduled_sampling_rate)
+            elif scheduled_sampling == C.SCHEDULED_SAMPLING_FAST:
+                target_embed = self._scheduled_sampling_fast(target, target_length, target_embed, states,
+                                                             rate=scheduled_sampling_rate)
+            else:
+                raise ValueError('Unknown scheduled sampling type: %s' % scheduled_sampling)
 
         target = self.decoder.decode_seq(target_embed, states=states)
 
@@ -284,6 +300,119 @@ class SockeyeModel(mx.gluon.Block):
             forward_output[C.LENRATIO_NAME] = self.length_ratio(source_encoded, source_encoded_length)
 
         return forward_output
+
+    def _scheduled_sampling_full(self,
+                                 source_encoded: mx.nd.NDArray,
+                                 source_encoded_length: mx.nd.NDArray,
+                                 target: mx.nd.NDArray,
+                                 target_length: mx.nd.NDArray,
+                                 rate: float = 1) -> mx.nd.NDArray:
+        """
+        Apply scheduled sampling (Bengio et al. 2015, arxiv.org/abs/1506.03099).
+
+        This method runs after the embeddings/encoder forward pass to generate a
+        new target embedding sequence for the decoder forward pass. It runs a
+        simplified version of `GreedySearch` to generate a new target sequence,
+        randomly choosing between the predicted target token and the true token
+        at each time step.
+
+        :param source_encoded: Encoder outputs.
+        :param source_encoded_length: Valid lengths of encoder outputs.
+        :param target: Target input data (true tokens).
+        :param target_length: Length of target inputs.
+        :param rate: Rate for choosing predicted tokens instead of true tokens.
+
+        :return: Embedded target data after applying scheduled sampling.
+        """
+        # TODO: Being able to temporarily switch the decoder to "inference only"
+        # mode would enable additional optimizations.
+        with mx.autograd.pause():
+            # Initialize decoder states for search
+            states = self.decoder.init_state_from_encoder(source_encoded, source_encoded_length)
+            # Decoder outputs for current step and inputs for next step. Shape
+            # (batch_size, num_target_factors), initialized with BOS symbols
+            # from true target inputs.
+            best_word_indices = mx.nd.full(shape=(target.shape[0], self.num_target_factors), val=target[0][0][0],
+                                           ctx=target.context, dtype='float32')
+            outputs = []  # type: List[mx.nd.NDArray]
+            # Run greedy search for T=seq_len steps
+            for t in range(1, target.shape[1]):
+                logits, states, target_factor_outputs = self.decode_step(best_word_indices, states)
+                # Shape (batch_size, 1)
+                best_word_indices = mx.nd.topk(-1 * logits, axis=-1, k=1, ret_typ='indices', is_ascend=True,
+                                               dtype='float32')
+                if target_factor_outputs:
+                    factor_predictions = [mx.nd.cast(tfo.argmax(axis=-1, keepdims=True), dtype='float32') for tfo in
+                                          target_factor_outputs]
+                    # Shape (batch_size, num_target_factors)
+                    best_word_indices = mx.nd.concat(best_word_indices, *factor_predictions, dim=-1)
+                # Randomly select model prediction or true target token
+                if rate < 1:
+                    use_prediction = mx.nd.random_uniform(low=0, high=1, shape=(target.shape[0], 1),
+                                                          ctx=target.context) < rate
+                    best_word_indices = use_prediction * best_word_indices + (1 - use_prediction) * target[:, t, :]
+                outputs.append(best_word_indices)
+            # Construct scheduled sampling target with same shape and indexing
+            # as original target
+            stacked_outputs = mx.nd.stack(*outputs, axis=2)
+            scheduled_sampling_target = target.copy()
+            scheduled_sampling_target[:, 1:, :] = mx.nd.transpose(stacked_outputs, axes=(0, 2, 1))
+        return self.embedding_target(scheduled_sampling_target, target_length)[0]
+
+    def _scheduled_sampling_fast(self,
+                                 target: mx.nd.NDArray,
+                                 target_length: mx.nd.NDArray,
+                                 target_embed: mx.nd.NDArray,
+                                 states: List[mx.nd.NDArray],
+                                 rate: float = 1) -> mx.nd.NDArray:
+        """
+        Apply fast approximation of scheduled sampling (Mihaylova and Martins
+        2019, arxiv.org/abs/1906.07651).
+
+        This method runs after the embeddings/encoder forward pass to generate a
+        new target embedding sequence for the decoder forward pass. It runs
+        `decode_seq` to predict the entire target sequence in parallel using the
+        true target sequence as decoder inputs. The predicted and true target
+        sequences are combined by choosing either the predicted or true token at
+        each target index. This is faster than running `GreedySearch` with the
+        trade-off that all predictions are made independently based on the true
+        target sequence up to the current index.
+
+        :param target: Target input data.
+        :param target_length: Length of target inputs.
+        :param target_embed: Embedded target data.
+        :param states: Initial decoder states.
+        :param rate: Rate for choosing predicted tokens instead of true tokens.
+
+        :return: Embedded target data after applying approximate scheduled
+                 sampling.
+        """
+        with mx.autograd.pause():
+            # Predict entire target sequence in parallel using the true target
+            # sequence as decoder inputs
+            states = self.decoder.decode_seq(target_embed, states=states)
+            best_word_indices = mx.nd.topk(-1 * self.output_layer(states, None), axis=-1, k=1, ret_typ='indices',
+                                           is_ascend=True, dtype='int32')
+            factor_predictions = []  # type: List[mx.nd.NDArray]
+            for factor_output_layer in self.factor_output_layers:
+                factor_predictions.append(mx.nd.topk(-1 * factor_output_layer(states, None), axis=-1, k=1,
+                                          ret_typ='indices', is_ascend=True, dtype='int32'))
+            if factor_predictions:
+                best_word_indices = mx.nd.concat(best_word_indices, *factor_predictions, dim=-1)
+            # Construct scheduled sampling target with same shape and indexing
+            # as original target. This includes right-shifting predictions by 1
+            # (sequences start with BOS) and discarding the final predictions
+            # (not used as inputs for any step).
+            scheduled_sampling_target = target.copy()
+            scheduled_sampling_target[:, 1:, :] = best_word_indices[:, :-1, :]
+            # Randomly choose per-token between the predicted target and true
+            # target.
+            if rate < 1:
+                use_prediction = mx.nd.random_uniform(low=0, high=1, shape=target.shape, ctx=target.context) < rate
+                target = use_prediction * scheduled_sampling_target + (1 - use_prediction) * target
+            else:
+                target = scheduled_sampling_target
+        return self.embedding_target(target, target_length)[0]
 
     def predict_output_length(self,
                               source_encoded: mx.nd.NDArray,

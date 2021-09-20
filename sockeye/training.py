@@ -75,6 +75,10 @@ class TrainerConfig(Config):
     max_seconds: Optional[int] = None
     update_interval: int = 1
     stop_training_on_decoder_failure: bool = False
+    scheduled_sampling: Optional[str] = None
+    scheduled_sampling_eval: bool = False
+    scheduled_sampling_rate: float = 0
+    scheduled_sampling_warmup: int = 0
 
 
 class TrainState:
@@ -315,7 +319,10 @@ class GluonEarlyStoppingTrainer:
 
         # send sharded inputs to the backend
         for inputs, labels in batch.shards():
-            self._parallel.put((inputs, labels))
+            self._parallel.put((inputs,
+                                labels,
+                                self.config.scheduled_sampling,
+                                self.current_scheduled_sampling_rate))
 
         # get outputs from parallel requests to the backend. Each shard output contains a list of tuples, one for each
         # loss function of the form: (loss_value, num_samples).
@@ -366,7 +373,9 @@ class GluonEarlyStoppingTrainer:
             batch = batch.split_and_load(ctx=self.context)
             sharded_loss_outputs = []  # type: List[List[Tuple[mx.nd.NDArray, mx.nd.NDArray]]]
             for inputs, labels in batch.shards():
-                outputs = self.model(*inputs)  # type: Dict[str, mx.nd.NDArray]
+                # When scheduled sampling is used for evaluation, the sampling
+                # rate is always 1
+                outputs = self.model(*inputs, self.scheduled_sampling_eval, 1)  # type: Dict[str, mx.nd.NDArray]
                 loss_outputs = [loss_function(outputs, labels) for loss_function in self.loss_functions]
                 sharded_loss_outputs.append(loss_outputs)
 
@@ -737,6 +746,17 @@ class GluonEarlyStoppingTrainer:
     def best_lr_scheduler_fname(self) -> str:
         return os.path.join(self.config.output_dir, C.LR_SCHEDULER_BEST)
 
+    @property
+    def current_scheduled_sampling_rate(self) -> float:
+        if self.config.scheduled_sampling_warmup == 0:
+            return self.config.scheduled_sampling_rate
+        return self.config.scheduled_sampling_rate * (self.state.batches /
+                (self.config.scheduled_sampling_warmup * self.config.update_interval))
+
+    @property
+    def scheduled_sampling_eval(self) -> Optional[str]:
+        return self.config.scheduled_sampling if self.config.scheduled_sampling_eval else None
+
 
 class ParallelModel(parallel.Parallelizable):
 
@@ -750,13 +770,13 @@ class ParallelModel(parallel.Parallelizable):
         self.trainer = trainer
         self.using_amp = using_amp
 
-    def forward_backward(self, shard: Tuple) -> List[Tuple[mx.nd.NDArray, mx.nd.NDArray]]:
+    def forward_backward(self, shard_plus_args: Tuple) -> List[Tuple[mx.nd.NDArray, mx.nd.NDArray]]:
         """
         Applies forward-backward pass for a single shard of a batch (data-parallel training).
         """
-        inputs, labels = shard
+        inputs, labels, scheduled_sampling, scheduled_sampling_rate = shard_plus_args
         with mx.autograd.record():
-            outputs = self.model(*inputs)  # type: Dict[str, mx.nd.NDArray]
+            outputs = self.model(*inputs, scheduled_sampling, scheduled_sampling_rate)  # type: Dict[str, mx.nd.NDArray]
             loss_outputs = [loss_function(outputs, labels) for loss_function in self.loss_functions]
             loss_values = (v for v, _ in loss_outputs)
             sum_losses = mx.nd.add_n(*loss_values)

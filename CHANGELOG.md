@@ -11,11 +11,16 @@ Note that Sockeye has checks in place to not translate with an old model that wa
 
 Each version section may have have subsections for: _Added_, _Changed_, _Removed_, _Deprecated_, and _Fixed_.
 
+## [2.3.23]
+
+### Added
+
+- Added scheduled sampling mode, where models are trained on a mixture of true target tokens and their own predictions ([Bengio et al., 2015](https://arxiv.org/abs/1506.03099); [Mihaylova and Martins, 2019](https://arxiv.org/abs/1906.07651)). Decoder inputs are mixed targets while labels are always true targets. The "full" version uses the prediction generation strategy from the first paper while the "fast" version uses a parallelized approximation from the second. See `sockeye.train` arguments `--scheduled-sampling`, `--scheduled-sampling-eval`, `--scheduled-sampling-rate`, and `--scheduled-sampling-warmup`.
+
 ## [2.3.22]
 ### Fixed
 
 - The previous commit introduced a regression for vocab creation. The results was that the vocabulary was created on the input characters rather than on tokens.
-
 
 ## [2.3.21]
 ### Added
