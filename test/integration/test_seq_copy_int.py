@@ -160,6 +160,22 @@ ENCODER_DECODER_SETTINGS_TEMPLATE = [
      " --scheduled-sampling fast --scheduled-sampling-eval --scheduled-sampling-rate 0.5 --scheduled-sampling-warmup 1",
      "--beam-size 2",
      True, 3, 1),
+      # Basic transformer with source and target factors, uniform scheduled sampling
+    ("--encoder transformer --decoder {decoder}"
+     " --num-layers 2 --transformer-attention-heads 2 --transformer-model-size 8 --num-embed 8"
+     " --transformer-feed-forward-num-hidden 16"
+     " --transformer-dropout-prepost 0.1 --transformer-preprocess n --transformer-postprocess dr"
+     " --weight-tying-type trg_softmax"
+     " --batch-size 2 --max-updates 2 --batch-type sentence --decode-and-evaluate 0"
+     " --checkpoint-interval 2 --optimizer adam --initial-learning-rate 0.01"
+     " --source-factors-combine sum concat average --source-factors-share-embedding true false true"
+     " --source-factors-num-embed 8 2 8"
+     " --target-factors-combine sum --target-factors-share-embedding false"
+     " --target-factors-num-embed 8"
+     " --scheduled-sampling uniform --scheduled-sampling-eval --scheduled-sampling-rate 0.5"
+     " --scheduled-sampling-warmup 1",
+     "--beam-size 2",
+     True, 3, 1),
 ]
 
 ENCODER_DECODER_SETTINGS = [(train_params.format(decoder=decoder), *other_params)

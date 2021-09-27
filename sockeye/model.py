@@ -283,6 +283,8 @@ class SockeyeModel(mx.gluon.Block):
             elif scheduled_sampling == C.SCHEDULED_SAMPLING_FAST:
                 target_embed = self._scheduled_sampling_fast(target, target_length, target_embed, states,
                                                              rate=scheduled_sampling_rate)
+            elif scheduled_sampling == C.SCHEDULED_SAMPLING_UNIFORM:
+                target_embed = self._scheduled_sampling_uniform(target, target_length, rate=scheduled_sampling_rate)
             else:
                 raise ValueError('Unknown scheduled sampling type: %s' % scheduled_sampling)
 
@@ -413,6 +415,49 @@ class SockeyeModel(mx.gluon.Block):
             else:
                 target = scheduled_sampling_target
         return self.embedding_target(target, target_length)[0]
+
+    def _scheduled_sampling_uniform(self,
+                                    target: mx.nd.NDArray,
+                                    target_length: mx.nd.NDArray,
+                                    rate: float = 1) -> mx.nd.NDArray:
+        """
+        Apply uniform (random) scheduled sampling (Bengio et al. 2015,
+        arxiv.org/abs/1506.03099).
+
+        This method runs after the embeddings/encoder forward pass to generate a
+        new target embedding sequence for the decoder forward pass. It randomly
+        replaces true target tokens with uniform random draws from the target
+        vocabulary (applied per-factor).
+
+        :param target: Target input data (true tokens).
+        :param target_length: Length of target inputs.
+        :param rate: Rate for choosing random tokens instead of true tokens.
+
+        :return: Embedded target data after applying uniform scheduled sampling.
+        """
+        with mx.autograd.pause():
+            scheduled_sampling_target = target.copy()
+            # Sampling is per-factor
+            factor_vocab_sizes = [self.config.vocab_target_size]
+            if self.config.config_embed_target.factor_configs is not None:
+                factor_vocab_sizes += [fc.vocab_size for fc in self.config.config_embed_target.factor_configs]
+            for i, vocab_size in enumerate(factor_vocab_sizes):
+                # Uniform random sample over vocabulary for current factor.
+                # Avoid special symbols. Do not sample tokens for initial BOS
+                # (seq_len index 0).
+                random_target = mx.nd.random_randint(low=len(C.VOCAB_SYMBOLS), high=vocab_size,
+                                                     shape=(target.shape[0], target.shape[1] - 1), ctx=target.context,
+                                                     dtype='int32').astype('float32')
+                # Randomly replace true target tokens with samples at the
+                # specified rate
+                if rate < 1:
+                    use_random = mx.nd.random_uniform(low=0, high=1, shape=random_target.shape,
+                                                      ctx=target.context) < rate
+                    scheduled_sampling_target[:, 1:, i] = use_random * random_target + \
+                                                          (1 - use_random) * target[:, 1:, i]
+                else:
+                    scheduled_sampling_target[:, 1:, i] = random_target
+        return self.embedding_target(scheduled_sampling_target, target_length)[0]
 
     def predict_output_length(self,
                               source_encoded: mx.nd.NDArray,

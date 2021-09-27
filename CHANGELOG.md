@@ -15,7 +15,7 @@ Each version section may have have subsections for: _Added_, _Changed_, _Removed
 
 ### Added
 
-- Added scheduled sampling mode, where models are trained on a mixture of true target tokens and their own predictions ([Bengio et al., 2015](https://arxiv.org/abs/1506.03099); [Mihaylova and Martins, 2019](https://arxiv.org/abs/1906.07651)). Decoder inputs are mixed targets while labels are always true targets. The "full" version uses the prediction generation strategy from the first paper while the "fast" version uses a parallelized approximation from the second. See `sockeye.train` arguments `--scheduled-sampling`, `--scheduled-sampling-eval`, `--scheduled-sampling-rate`, and `--scheduled-sampling-warmup`.
+- Added scheduled sampling mode, where models are trained on a mixture of true target tokens and their own predictions ([Bengio et al., 2015](https://arxiv.org/abs/1506.03099); [Mihaylova and Martins, 2019](https://arxiv.org/abs/1906.07651)). Decoder inputs are mixed targets while labels are always true targets. The "full" version uses the prediction generation strategy from the first paper, the "fast" version uses a parallelized approximation from the second, and the "uniform" version samples uniformly from the target vocabulary instead of the model (also described in the first paper). See `sockeye.train` arguments `--scheduled-sampling`, `--scheduled-sampling-eval`, `--scheduled-sampling-rate`, and `--scheduled-sampling-warmup`.
 
 ## [2.3.22]
 ### Fixed

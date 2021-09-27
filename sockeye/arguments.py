@@ -861,9 +861,10 @@ def add_training_args(params):
                               help='Train the model on a mixture of true target tokens and its own predictions (Bengio '
                                    'et al. 2015, arxiv.org/abs/1506.03099; Mihaylova and Martins 2019, '
                                    'arxiv.org/abs/1906.07651). Decoder inputs are mixed targets while labels are '
-                                   'always true targets. Full mode: generate predictions step by step as described by '
-                                   'Bengio et al. Fast mode: generate all predictions in parallel using the true '
-                                   'target as input as described by Mihaylova and Martins. Default: %(default)s.')
+                                   'always true targets. Full: generate predictions step by step as described by '
+                                   'Bengio et al. Fast: generate all predictions in parallel using the true target '
+                                   'as input as described by Mihaylova and Martins. Uniform: sample uniformly from '
+                                   'the target vocabulary instead of the model. Default: %(default)s.')
     train_params.add_argument('--scheduled-sampling-eval',
                               action='store_true',
                               default=False,
