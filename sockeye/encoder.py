@@ -145,11 +145,13 @@ class Embedding(Encoder):
                 self.params.update({embed_weight.name: embed_weight})  # adds to self.params
                 self._use_sparse_grad = embed_weight._grad_stype == 'row_sparse' and self.config.allow_sparse_grad
 
+            self.factor_weights = []  # type: List[mx.gluon.Parameter]
             if self.config.factor_configs is not None:
                 for i, fc in enumerate(self.config.factor_configs, 1):
                     factor_weight_name = self._factor_weight_format_string % i
                     factor_weight = embed_weight if fc.share_embedding else \
                         self.params.get(factor_weight_name, shape=(fc.vocab_size, fc.num_embed), dtype=dtype)
+                    self.factor_weights.append(factor_weight)
                     # We set the attribute of the class to trigger the hybrid_forward parameter creation "magic"
                     setattr(self, factor_weight_name, factor_weight)
 

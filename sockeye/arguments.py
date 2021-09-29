@@ -858,31 +858,43 @@ def add_training_args(params):
     train_params.add_argument('--scheduled-sampling',
                               choices=C.SCHEDULED_SAMPLING_CHOICES,
                               default=None,
-                              help='Train the model on a mixture of true target tokens and its own predictions (Bengio '
-                                   'et al. 2015, arxiv.org/abs/1506.03099; Mihaylova and Martins 2019, '
-                                   'arxiv.org/abs/1906.07651). Decoder inputs are mixed targets while labels are '
-                                   'always true targets. Full: generate predictions step by step as described by '
-                                   'Bengio et al. Fast: generate all predictions in parallel using the true target '
-                                   'as input as described by Mihaylova and Martins. Uniform: sample uniformly from '
-                                   'the target vocabulary instead of the model. Default: %(default)s.')
-    train_params.add_argument('--scheduled-sampling-eval',
-                              action='store_true',
-                              default=False,
-                              help='Also use scheduled sampling when computing loss on validation data. Use a '
-                                   'constant sampling rate of 1 (always evaluate on full model predictions). '
+                              help='Train the model on a mixture of true target tokens and its own predictions. '
+                                   'Decoder inputs are mixed targets while labels are always true targets. Full: '
+                                   'generate predictions step by step (Bengio et al. 2015, arxiv.org/abs/1506.03099). '
+                                   'Uniform: sample uniformly from the target vocabulary instead of the model (also '
+                                   'from Bengio et al.). Fast: generate all predictions in parallel using the true '
+                                   'target (Mihaylova and Martins 2019, arxiv.org/abs/1906.07651). Diff: run '
+                                   'differentiable greedy search (Goyal et al. 2017, arxiv.org/abs/1704.06970). '
                                    'Default: %(default)s.')
     train_params.add_argument('--scheduled-sampling-rate',
                               type=float_greater_or_equal(0),
-                              default=0,
+                              default=1,
                               help='Rate for choosing model predictions instead of true target tokens. N=0 corresponds '
                                    'to regular training while N=1 corresponds to always using model predictions. '
                                    'Default: %(default)s.')
-    train_params.add_argument('--scheduled-sampling-warmup',
+    train_params.add_argument('--scheduled-sampling-rate-warmup',
                               type=int_greater_or_equal(0),
                               default=0,
-                              help='When N>0, linearly increase the scheduled sampling rate from zero to the specified '
-                                   'rate over the first N training steps. Default: %(default)s.')
-
+                              help='When N>0, increase the scheduled sampling rate from zero to the specified rate '
+                                   'over the first N training steps using a sigmoid function (comparable to inverse '
+                                   'sigmoid decay from Bengio et al., 2015) Default: %(default)s.')
+    train_params.add_argument('--scheduled-sampling-temperature',
+                              type=float_greater_or_equal(0),
+                              default=1,
+                              help='Softmax temperature (alpha) for scheduled sampling "diff" mode. Higher values more '
+                                   'more closely approximate argmax. Default: %(default)s.')
+    train_params.add_argument('--scheduled-sampling-temperature-warmup',
+                              type=int_greater_or_equal(0),
+                              default=0,
+                              help='When N>0, increase the scheduled sampling softmax temperature from one to the '
+                                   'specified rate over the first N training steps using a sigmoid function '
+                                   '(comparable to inverse sigmoid decay from Bengio et al., 2015) '
+                                   'Default: %(default)s.')
+    train_params.add_argument('--scheduled-sampling-sample',
+                              action='store_true',
+                              default=False,
+                              help='Approximate sampling from the softmax (Gumbel softmax) in "diff" mode. '
+                                   'Default: %(default)s.')
 
     train_params.add_argument('--length-task',
                               type=str,

@@ -224,16 +224,20 @@ class SockeyeModel(mx.gluon.Block):
         states = self.decoder.init_state_from_encoder(source_encoded, source_encoded_length, target_embed)
         return source_encoded, source_encoded_length, target_embed, states
 
-    def decode_step(self, step_input, states, vocab_slice_ids=None):
+    def decode_step(self, step_input, states, vocab_slice_ids=None, requires_embed=True):
         """
         One step decoding of the translation model.
 
         Parameters
         ----------
         step_input : NDArray
-            Shape (batch_size, num_target_factors)
+            Shape (batch_size, num_target_factors) for indices or (batch_size,
+            num_target_embed) for embeddings
         states : list of NDArrays
         vocab_slice_ids : NDArray or None
+        requires_embed : bool
+            True: Inputs are indices. Convert to embeddings.
+            False: Inputs are embeddings. Use directly.
 
         Returns
         -------
@@ -247,8 +251,11 @@ class SockeyeModel(mx.gluon.Block):
             # Turn on training mode so mxnet knows to add dropout
             _ = mx.autograd.set_training(True)
 
-        valid_length = mx.nd.ones(shape=(step_input.shape[0],), ctx=step_input.context)
-        target_embed, _ = self.embedding_target(step_input.reshape((0, 1, -1)), valid_length=valid_length)
+        if requires_embed:
+            valid_length = mx.nd.ones(shape=(step_input.shape[0],), ctx=step_input.context)
+            target_embed, _ = self.embedding_target(step_input.reshape((0, 1, -1)), valid_length=valid_length)
+        else:
+            target_embed = step_input.reshape((0, 1, -1))
         decoder_out, new_states = self.decoder(target_embed, states)
         decoder_out = decoder_out.squeeze(axis=1)
         # step_output: (batch_size, target_vocab_size or vocab_slice_ids)
@@ -268,7 +275,9 @@ class SockeyeModel(mx.gluon.Block):
                 target: mx.nd.NDArray,
                 target_length: mx.nd.NDArray,
                 scheduled_sampling: Optional[str] = None,
-                scheduled_sampling_rate: float = 0):  # pylint: disable=arguments-differ
+                scheduled_sampling_rate: float = 1,
+                scheduled_sampling_temperature: float = 1,
+                scheduled_sampling_sample: bool = False):  # pylint: disable=arguments-differ
         # When updating only the decoder (specified directly or implied by
         # caching the encoder and embedding forward passes), turn off autograd
         # for the encoder and embeddings to save memory.
@@ -276,7 +285,9 @@ class SockeyeModel(mx.gluon.Block):
             source_encoded, source_encoded_length, target_embed, states = self.embed_and_encode(source, source_length,
                                                                                                 target, target_length)
 
-        if scheduled_sampling is not None and scheduled_sampling_rate > 0:
+        forward_output = dict()
+
+        if scheduled_sampling is not None:
             if scheduled_sampling == C.SCHEDULED_SAMPLING_FULL:
                 target_embed = self._scheduled_sampling_full(source_encoded, source_encoded_length, target,
                                                              target_length, rate=scheduled_sampling_rate)
@@ -285,17 +296,25 @@ class SockeyeModel(mx.gluon.Block):
                                                              rate=scheduled_sampling_rate)
             elif scheduled_sampling == C.SCHEDULED_SAMPLING_UNIFORM:
                 target_embed = self._scheduled_sampling_uniform(target, target_length, rate=scheduled_sampling_rate)
+            elif scheduled_sampling == C.SCHEDULED_SAMPLING_DIFF:
+                logits, target_factor_logits = self._scheduled_sampling_diff(source_encoded, source_encoded_length,
+                                                                             target, target_embed,
+                                                                             rate=scheduled_sampling_rate,
+                                                                             temperature=scheduled_sampling_temperature,
+                                                                             sample=scheduled_sampling_sample)
+                forward_output[C.LOGITS_NAME] = logits
+                if target_factor_logits:
+                    for i, tf_logits in enumerate(target_factor_logits, 1):
+                        forward_output[C.FACTOR_LOGITS_NAME % i] = tf_logits
             else:
                 raise ValueError('Unknown scheduled sampling type: %s' % scheduled_sampling)
 
-        target = self.decoder.decode_seq(target_embed, states=states)
+        if scheduled_sampling != C.SCHEDULED_SAMPLING_DIFF:
+            target = self.decoder.decode_seq(target_embed, states=states)
+            forward_output[C.LOGITS_NAME] = self.output_layer(target, None)
 
-        forward_output = dict()
-
-        forward_output[C.LOGITS_NAME] = self.output_layer(target, None)
-
-        for i, factor_output_layer in enumerate(self.factor_output_layers, 1):
-            forward_output[C.FACTOR_LOGITS_NAME % i] = factor_output_layer(target, None)
+            for i, factor_output_layer in enumerate(self.factor_output_layers, 1):
+                forward_output[C.FACTOR_LOGITS_NAME % i] = factor_output_layer(target, None)
 
         if self.length_ratio is not None:
             # predicted_length_ratios: (batch_size,)
@@ -458,6 +477,105 @@ class SockeyeModel(mx.gluon.Block):
                 else:
                     scheduled_sampling_target[:, 1:, i] = random_target
         return self.embedding_target(scheduled_sampling_target, target_length)[0]
+
+    def _scheduled_sampling_diff(self,
+                                 source_encoded: mx.nd.NDArray,
+                                 source_encoded_length: mx.nd.NDArray,
+                                 target: mx.nd.NDArray,
+                                 target_embed: mx.nd.NDArray,
+                                 rate: float = 1,
+                                 temperature: float = 1,
+                                 sample: bool = False) -> Tuple[mx.nd.NDArray, List[mx.nd.NDArray]]:
+        """
+        Apply differentiable scheduled sampling (Goyal et al. 2017,
+        arxiv.org/abs/1704.06970).
+
+        This method runs after the embeddings/encoder forward pass instead of
+        `decode_seq` to generate logits for the backward pass. It runs a
+        differentiable version of `GreedySearch`, randomly choosing between
+        model predictions (weighted sums of all embeddings) and true target
+        embeddings as the inputs to each step.
+
+        :param source_encoded: Encoder outputs.
+        :param source_encoded_length: Valid lengths of encoder outputs.
+        :param target: Target input data (true tokens).
+        :param rate: Rate for choosing model predictions instead of true tokens.
+        :param temperature: Softmax temperature (alpha in paper). Higher values
+                            more closely approximate argmax.
+        :param sample: Approximate sampling from the softmax (Gumbel softmax).
+
+        :return: Logits NDArray, list of target factor logits NDArrays.
+        """
+
+        if self.num_target_factors > 1:
+            for fc in self.target_factor_configs:
+                assert fc.combine == C.FACTORS_COMBINE_SUM, \
+                        'Scheduled sampling "diff" mode currently supports "sum" mode for target factors.'
+
+        def apply_sample_and_temperature(step_logits: mx.nd.NDArray):
+            if sample:
+                # Gumbel noise: logits + G, G = -log(-log(uniform(0, 1)))
+                step_logits = step_logits + mx.nd.log(-1 * mx.nd.log(mx.nd.random.uniform(shape=step_logits.shape)))
+            if temperature != 1:
+                # Higher temperature (alpha) is closer to argmax
+                step_logits = step_logits * temperature
+            return step_logits
+
+        # Init/convenience
+        seq_len = target.shape[1]
+        target_embed_weight = self.embedding_target.embed_weight.data(ctx=target.context)
+        target_factor_embed_weights = [tfw.data(ctx=target.context) for tfw in self.embedding_target.factor_weights]
+        states = self.decoder.init_state_from_encoder(source_encoded, source_encoded_length)
+
+        # Lists to track logits for each step (batch_size, vocab_size) that will
+        # be stacked for return (batch_size, seq_len, vocab_size)
+        logits_to_stack = []  # type: List[mx.nd.NDArray]
+        target_factor_logits_to_stack = \
+                [[] for _ in range(self.num_target_factors - 1)]  # type: List[List[mx.nd.NDArray]]
+
+        # True BOS input embeddings for first step
+        # (variable reused for future steps)
+        step_embeddings = target_embed[:, 0, :]
+
+        # Greedy search loop
+        for t in range(seq_len):
+            # Logits: (batch_size, vocab_size)
+            logits, states, target_factor_logits = self.decode_step(step_embeddings, states, requires_embed=False)
+            logits_to_stack.append(logits)
+            for tf_logits, tfl_to_stack in zip(target_factor_logits, target_factor_logits_to_stack):
+                tfl_to_stack.append(tf_logits)
+
+            if t == seq_len - 1:
+                # Final step only needs to generate logits, not inputs for t + 1
+                continue
+
+            # Weighted sum of all embeddings: (batch_size, num_embed)
+            logits = apply_sample_and_temperature(logits)
+            step_embeddings = mx.nd.sum(mx.nd.expand_dims(mx.nd.softmax(logits), -1) * target_embed_weight, axis=-2)
+
+            # Generate and combine embedding sums for target factors
+            if self.num_target_factors > 1:
+                target_factor_step_embeddings = []  # type: List[mx.nd.NDArray]
+                for tf_logits, tf_embed_weight in zip(target_factor_logits, target_factor_embed_weights):
+                    tf_logits = apply_sample_and_temperature(tf_logits)
+                    target_factor_step_embeddings.append(mx.nd.sum(mx.nd.expand_dims(mx.nd.softmax(tf_logits), -1)
+                                                                   * tf_embed_weight, axis=-2))
+                # Combine target factors with "sum": (batch_size, num_embed)
+                step_embeddings = mx.nd.add_n(step_embeddings, *target_factor_step_embeddings)
+
+            # Randomly choose between model predictions and embeddings from true
+            # target tokens
+            if rate < 1:
+                step_true_embeddings = target_embed[:, t + 1, :]
+                use_prediction = mx.nd.random.uniform_like(low=0, high=1, data=step_true_embeddings) < rate
+                step_embeddings = use_prediction * step_embeddings + (1 - use_prediction) * step_true_embeddings
+
+        # Logits for full batch: (batch_size, seq_len, vocab_size)
+        stacked_logits = mx.nd.stack(*logits_to_stack, axis=1)
+        target_factor_stacked_logits = [mx.nd.stack(*tfl_to_stack, axis=1)
+                                        for tfl_to_stack in target_factor_logits_to_stack]
+
+        return stacked_logits, target_factor_stacked_logits
 
     def predict_output_length(self,
                               source_encoded: mx.nd.NDArray,

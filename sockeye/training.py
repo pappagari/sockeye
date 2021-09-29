@@ -23,7 +23,7 @@ import shutil
 import time
 from collections import deque
 from dataclasses import dataclass
-from math import sqrt
+from math import exp, sqrt
 from typing import Callable, Dict, List, Optional, Iterable, Tuple, Union, Set
 
 import mxnet as mx
@@ -76,9 +76,11 @@ class TrainerConfig(Config):
     update_interval: int = 1
     stop_training_on_decoder_failure: bool = False
     scheduled_sampling: Optional[str] = None
-    scheduled_sampling_eval: bool = False
-    scheduled_sampling_rate: float = 0
-    scheduled_sampling_warmup: int = 0
+    scheduled_sampling_rate: float = 1
+    scheduled_sampling_rate_warmup: int = 0
+    scheduled_sampling_temperature: float = 1
+    scheduled_sampling_temperature_warmup: int = 0
+    scheduled_sampling_sample: bool = False
 
 
 class TrainState:
@@ -322,7 +324,9 @@ class GluonEarlyStoppingTrainer:
             self._parallel.put((inputs,
                                 labels,
                                 self.config.scheduled_sampling,
-                                self.current_scheduled_sampling_rate))
+                                self.current_scheduled_sampling_rate,
+                                self.current_scheduled_sampling_temperature,
+                                self.config.scheduled_sampling_sample))
 
         # get outputs from parallel requests to the backend. Each shard output contains a list of tuples, one for each
         # loss function of the form: (loss_value, num_samples).
@@ -373,9 +377,13 @@ class GluonEarlyStoppingTrainer:
             batch = batch.split_and_load(ctx=self.context)
             sharded_loss_outputs = []  # type: List[List[Tuple[mx.nd.NDArray, mx.nd.NDArray]]]
             for inputs, labels in batch.shards():
-                # When scheduled sampling is used for evaluation, the sampling
-                # rate is always 1
-                outputs = self.model(*inputs, self.scheduled_sampling_eval, 1)  # type: Dict[str, mx.nd.NDArray]
+                # When running scheduled sampling, always evaluate using the
+                # final (warmed up) rate and temperature
+                outputs = self.model(*inputs,
+                                     self.config.scheduled_sampling,
+                                     self.config.scheduled_sampling_rate,
+                                     self.config.scheduled_sampling_temperature,
+                                     self.config.scheduled_sampling_sample)  # type: Dict[str, mx.nd.NDArray]
                 loss_outputs = [loss_function(outputs, labels) for loss_function in self.loss_functions]
                 sharded_loss_outputs.append(loss_outputs)
 
@@ -748,14 +756,19 @@ class GluonEarlyStoppingTrainer:
 
     @property
     def current_scheduled_sampling_rate(self) -> float:
-        if self.config.scheduled_sampling_warmup == 0:
+        if self.config.scheduled_sampling_rate_warmup == 0:
             return self.config.scheduled_sampling_rate
-        return self.config.scheduled_sampling_rate * (self.state.batches /
-                (self.config.scheduled_sampling_warmup * self.config.update_interval))
+        # Sigmoid warmup
+        factor = self.state.batches / (self.config.scheduled_sampling_rate_warmup * self.config.update_interval)
+        return self.config.scheduled_sampling_rate * (1 - 1 / (1 + exp(14 * factor - 7)))
 
     @property
-    def scheduled_sampling_eval(self) -> Optional[str]:
-        return self.config.scheduled_sampling if self.config.scheduled_sampling_eval else None
+    def current_scheduled_sampling_temperature(self) -> float:
+        if self.config.scheduled_sampling_temperature_warmup == 0:
+            return self.config.scheduled_sampling_temperature
+        # Sigmoid warmup
+        factor = self.state.batches / (self.config.scheduled_sampling_temperature_warmup * self.config.update_interval)
+        return 1 + (self.config.scheduled_sampling_temperature - 1) * (1 - 1 / (1 + exp(14 * factor - 7)))
 
 
 class ParallelModel(parallel.Parallelizable):
@@ -774,9 +787,11 @@ class ParallelModel(parallel.Parallelizable):
         """
         Applies forward-backward pass for a single shard of a batch (data-parallel training).
         """
-        inputs, labels, scheduled_sampling, scheduled_sampling_rate = shard_plus_args
+        (inputs, labels, scheduled_sampling, scheduled_sampling_rate, scheduled_sampling_temperature,
+         scheduled_sampling_sample) = shard_plus_args
         with mx.autograd.record():
-            outputs = self.model(*inputs, scheduled_sampling, scheduled_sampling_rate)  # type: Dict[str, mx.nd.NDArray]
+            outputs = self.model(*inputs, scheduled_sampling, scheduled_sampling_rate, scheduled_sampling_temperature,
+                                 scheduled_sampling_sample)  # type: Dict[str, mx.nd.NDArray]
             loss_outputs = [loss_function(outputs, labels) for loss_function in self.loss_functions]
             loss_values = (v for v, _ in loss_outputs)
             sum_losses = mx.nd.add_n(*loss_values)

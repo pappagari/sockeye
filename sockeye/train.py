@@ -1028,6 +1028,9 @@ def train(args: argparse.Namespace, custom_metrics_logger: Optional[Callable] = 
 
         training_model = model.SockeyeModel(
             model_config,
+            # Differentiable scheduled sampling runs search (`decode_step`
+            # instead of `decode_seq`) and can use inference mode optimizations.
+            inference_only=args.scheduled_sampling == C.SCHEDULED_SAMPLING_DIFF,
             train_decoder_only=args.fixed_param_strategy == C.FIXED_PARAM_STRATEGY_ALL_EXCEPT_DECODER)
 
         # Handle options that override training settings
@@ -1053,9 +1056,11 @@ def train(args: argparse.Namespace, custom_metrics_logger: Optional[Callable] = 
             update_interval=args.update_interval,
             stop_training_on_decoder_failure=args.stop_training_on_decoder_failure,
             scheduled_sampling=args.scheduled_sampling,
-            scheduled_sampling_eval=args.scheduled_sampling_eval,
             scheduled_sampling_rate=args.scheduled_sampling_rate,
-            scheduled_sampling_warmup=args.scheduled_sampling_warmup
+            scheduled_sampling_rate_warmup=args.scheduled_sampling_rate_warmup,
+            scheduled_sampling_temperature=args.scheduled_sampling_temperature,
+            scheduled_sampling_temperature_warmup=args.scheduled_sampling_temperature_warmup,
+            scheduled_sampling_sample=args.scheduled_sampling_sample
         )
         if trainer_config.min_epochs is not None and trainer_config.max_epochs is not None:
             check_condition(trainer_config.min_epochs <= trainer_config.max_epochs,
