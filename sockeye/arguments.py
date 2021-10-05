@@ -855,6 +855,14 @@ def add_training_args(params):
                               type=float,
                               help='Smoothing constant for label smoothing. Default: %(default)s.')
 
+    train_params.add_argument('--rtl-agreement',
+                              type=float_greater_or_equal(0),
+                              default=0,
+                              help='Train a second right-to-left model in parallel (distinct weights, same settings). '
+                                   'Add a loss function for bidirectional KL divergence between the two models\' '
+                                   'outputs with the specified weight. Based on Hassan et al. (2018, '
+                                   'arxiv.org/abs/1803.05567). Default: %(default)s.')
+
     train_params.add_argument('--length-task',
                               type=str,
                               default=None,

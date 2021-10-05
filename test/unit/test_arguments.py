@@ -184,6 +184,7 @@ def test_inference_args(test_params, expected_params):
               round_batch_sizes_to_multiple_of=None,
               loss='cross-entropy-without-softmax-output',
               label_smoothing=0.1,
+              rtl_agreement=0,
               length_task=None,
               length_task_layers=1,
               length_task_weight=1.0,

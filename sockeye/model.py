@@ -54,6 +54,8 @@ class ModelConfig(Config):
     :param dtype: Data type of model parameters. Default: float32.
     :param intgemm_custom_lib: Path to intgemm custom operator library used for dtype is int8.  Default: libintgemm.so
                                in the same directory as this script.
+    :param rtl: Include second full model that decodes right-to-left.
+
     """
     config_data: data_io.DataConfig
     vocab_source_size: int
@@ -67,6 +69,7 @@ class ModelConfig(Config):
     lhuc: bool = False
     dtype: str = C.DTYPE_FP32
     intgemm_custom_lib: str = os.path.join(os.path.dirname(__file__), "libintgemm.so")
+    rtl: bool = False
 
 
 class SockeyeModel(mx.gluon.Block):
@@ -141,6 +144,17 @@ class SockeyeModel(mx.gluon.Block):
                                                   prefix=self.prefix + C.TARGET_FACTOR_OUTPUT_LAYER_PREFIX % i)
                 # Register the layer as child block
                 setattr(self, self._output_layer_factor_format_string % i, output_layer)
+
+            if config.rtl:
+                rtl_config = config.copy()
+                rtl_config.rtl = False
+                self.rtl_model = SockeyeModel(rtl_config,
+                                              inference_only=inference_only,
+                                              train_decoder_only=train_decoder_only,
+                                              mc_dropout=mc_dropout,
+                                              forward_pass_cache_size=forward_pass_cache_size,
+                                              prefix=C.RTL_PREFIX,
+                                              **kwargs)
 
             self.length_ratio = None
             if self.config.config_length_task is not None:
@@ -270,18 +284,34 @@ class SockeyeModel(mx.gluon.Block):
             source_encoded, source_encoded_length, target_embed, states = self.embed_and_encode(source, source_length,
                                                                                                 target, target_length)
 
-        target = self.decoder.decode_seq(target_embed, states=states)
+        _target = self.decoder.decode_seq(target_embed, states=states)
 
         forward_output = dict()
 
-        forward_output[C.LOGITS_NAME] = self.output_layer(target, None)
+        forward_output[C.LOGITS_NAME] = self.output_layer(_target, None)
 
         for i, factor_output_layer in enumerate(self.factor_output_layers, 1):
-            forward_output[C.FACTOR_LOGITS_NAME % i] = factor_output_layer(target, None)
+            forward_output[C.FACTOR_LOGITS_NAME % i] = factor_output_layer(_target, None)
 
         if self.length_ratio is not None:
             # predicted_length_ratios: (batch_size,)
             forward_output[C.LENRATIO_NAME] = self.length_ratio(source_encoded, source_encoded_length)
+
+        if self.config.rtl:
+            # Reverse target sequence after initial BOS
+            with mx.autograd.pause():
+                rtl_target = target.copy()
+                rtl_target[:, 1:, :] = mx.nd.SequenceReverse(rtl_target[:, 1:, :].transpose(axes=(1, 0, 2)),
+                                                             sequence_length=target_length - 1,
+                                                             use_sequence_length=True).transpose(axes=(1, 0, 2))
+            # Run standard model on regular source and right-to-left target
+            rtl_forward_output = self.rtl_model(source, source_length, rtl_target, target_length)
+            # Reverse logit sequences before final EOS to match labels
+            for logits_name in rtl_forward_output.keys():
+                rtl_logits = mx.nd.SequenceReverse(rtl_forward_output[logits_name].transpose(axes=(1, 0, 2)),
+                                                   sequence_length=target_length - 1,
+                                                   use_sequence_length=True).transpose(axes=(1, 0, 2))
+                forward_output[C.RTL_PREFIX + logits_name] = rtl_logits
 
         return forward_output
 

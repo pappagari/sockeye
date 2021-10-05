@@ -367,6 +367,10 @@ class GluonEarlyStoppingTrainer:
             sharded_loss_outputs = []  # type: List[List[Tuple[mx.nd.NDArray, mx.nd.NDArray]]]
             for inputs, labels in batch.shards():
                 outputs = self.model(*inputs)  # type: Dict[str, mx.nd.NDArray]
+                rtl_logits_name = C.RTL_PREFIX + C.LOGITS_NAME
+                if rtl_logits_name in outputs:
+                    labels[rtl_logits_name] = outputs[rtl_logits_name]
+                    labels[rtl_logits_name] = labels[rtl_logits_name] * (inputs[2][:, :, :1] != C.PAD_ID)
                 loss_outputs = [loss_function(outputs, labels) for loss_function in self.loss_functions]
                 sharded_loss_outputs.append(loss_outputs)
 
@@ -757,6 +761,10 @@ class ParallelModel(parallel.Parallelizable):
         inputs, labels = shard
         with mx.autograd.record():
             outputs = self.model(*inputs)  # type: Dict[str, mx.nd.NDArray]
+            rtl_logits_name = C.RTL_PREFIX + C.LOGITS_NAME
+            if rtl_logits_name in outputs:
+                labels[rtl_logits_name] = outputs[rtl_logits_name]
+                labels[rtl_logits_name] = labels[rtl_logits_name] * (inputs[2][:, :, :1] != C.PAD_ID)
             loss_outputs = [loss_function(outputs, labels) for loss_function in self.loss_functions]
             loss_values = (v for v, _ in loss_outputs)
             sum_losses = mx.nd.add_n(*loss_values)

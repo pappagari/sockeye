@@ -323,3 +323,50 @@ class MSELoss(Loss):
 
     def create_metric(self) -> 'LossMetric':
         return LossMetric(name=C.LENRATIO_MSE)
+
+
+class BidirectionalKLDivergence(Loss):
+    """
+    Computes the sum kld(output||label) + kld(label||output) where both output
+    and label are logits. Label logits for padding indices should be zeroed
+    before calling this loss function.
+    """
+
+    def __init__(self,
+                 name: str = C.KL_DIVERGENCE,
+                 weight: float = 1.0,
+                 dtype: str = C.DTYPE_FP32,
+                 output_name: str = C.LOGITS_NAME,
+                 label_name: str = C.RTL_PREFIX + C.LOGITS_NAME,
+                 metric_prefix: str = '') -> None:
+        super().__init__(name=name, output_name=output_name, label_name=label_name,
+                         weight=weight, metric_prefix=metric_prefix)
+        self._dtype = dtype
+
+    def hybrid_forward(self, F, logits, labels):
+        # (batch, len, vocab)
+        p = F.softmax(labels, axis=-1)
+        q = F.softmax(logits, axis=-1)
+
+        # (batch, len)
+        kld_pq = F.sum(p * F.log(p/q), axis=-1)
+        kld_qp = F.sum(q * F.log(q/p), axis=-1)
+        kld_sum = kld_pq + kld_qp
+
+        # Labels for padding indices are expected to be zeroed before calling
+        # this loss function. (batch, len)
+        valid_mask = F.sum(F.abs(labels), axis=-1) != 0
+
+        # (batch, len)
+        masked_loss = kld_sum * valid_mask
+
+        # (1,)
+        batch_loss = F.sum(masked_loss) * self.weight
+
+        # (1,)
+        num_valid = F.sum(valid_mask)
+
+        return batch_loss / num_valid, F.ones((1,))
+
+    def create_metric(self) -> 'LossMetric':
+        return LossMetric(prefix=self._metric_prefix, name=C.KL_DIVERGENCE, short_name=C.KL_DIVERGENCE_SHORT_NAME)

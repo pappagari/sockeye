@@ -702,7 +702,8 @@ def create_model_config(args: argparse.Namespace,
                                      config_length_task=config_length_task,
                                      weight_tying_type=args.weight_tying_type,
                                      lhuc=args.lhuc is not None,
-                                     dtype=args.dtype)
+                                     dtype=args.dtype,
+                                     rtl=args.rtl_agreement > 0)
     return model_config
 
 
@@ -720,33 +721,44 @@ def create_losses(args: argparse.Namespace, all_num_classes: List[int]) -> List[
 
     losses = []  # type: List[loss.Loss]
 
-    # Cross-Entropy losses for all target streams/factors
-    for i, (num_classes, weight) in enumerate(zip(all_num_classes, loss_weights)):
-        name = C.CROSS_ENTROPY
-        metric_prefix = '' if i == 0 else 'f%i-' % i
-        output_name = C.LOGITS_NAME if i == 0 else C.FACTOR_LOGITS_NAME % i
-        label_name = C.TARGET_LABEL_NAME if i == 0 else C.TARGET_FACTOR_LABEL_NAME % i
-        label_smoothing = args.label_smoothing if i == 0 else .0  # Note: No label smoothing for target factor losses.
 
-        if args.loss == C.CROSS_ENTROPY:
-            losses.append(loss.CrossEntropyLoss(name=name,
-                                                weight=weight,
-                                                label_smoothing=label_smoothing,
-                                                dtype=args.dtype,
-                                                output_name=output_name,
-                                                label_name=label_name,
-                                                metric_prefix=metric_prefix))
-        elif args.loss == C.CROSS_ENTROPY_WITOUT_SOFTMAX_OUTPUT:
-            losses.append(loss.CrossEntropyLossWithoutSoftmaxOutput(name=name,
-                                                                    weight=weight,
-                                                                    label_smoothing=label_smoothing,
-                                                                    dtype=args.dtype,
-                                                                    output_name=output_name,
-                                                                    label_name=label_name,
-                                                                    num_labels=num_classes,
-                                                                    metric_prefix=metric_prefix))
-        else:
-            raise ValueError('Unknown loss %s', args.loss)
+    # Primary model losses and optional right-to-left model losses
+    for prefix in ['', C.RTL_PREFIX] if args.rtl_agreement > 0 else ['']:
+        # Cross-Entropy losses for all target streams/factors
+        for i, (num_classes, weight) in enumerate(zip(all_num_classes, loss_weights)):
+            name = prefix + C.CROSS_ENTROPY
+            metric_prefix = prefix + ('' if i == 0 else 'f%i-' % i)
+            output_name = prefix + (C.LOGITS_NAME if i == 0 else C.FACTOR_LOGITS_NAME % i)
+            label_name = C.TARGET_LABEL_NAME if i == 0 else C.TARGET_FACTOR_LABEL_NAME % i
+            label_smoothing = args.label_smoothing if i == 0 else .0  # Note: No label smoothing for target factor losses.
+
+            if args.loss == C.CROSS_ENTROPY:
+                losses.append(loss.CrossEntropyLoss(name=name,
+                                                    weight=weight,
+                                                    label_smoothing=label_smoothing,
+                                                    dtype=args.dtype,
+                                                    output_name=output_name,
+                                                    label_name=label_name,
+                                                    metric_prefix=metric_prefix))
+            elif args.loss == C.CROSS_ENTROPY_WITOUT_SOFTMAX_OUTPUT:
+                losses.append(loss.CrossEntropyLossWithoutSoftmaxOutput(name=name,
+                                                                        weight=weight,
+                                                                        label_smoothing=label_smoothing,
+                                                                        dtype=args.dtype,
+                                                                        output_name=output_name,
+                                                                        label_name=label_name,
+                                                                        num_labels=num_classes,
+                                                                        metric_prefix=metric_prefix))
+            else:
+                raise ValueError('Unknown loss %s', args.loss)
+
+    if args.rtl_agreement > 0:
+        losses.append(loss.BidirectionalKLDivergence(name=C.RTL_PREFIX + C.KL_DIVERGENCE,
+                                                     weight=args.rtl_agreement,
+                                                     dtype=args.dtype,
+                                                     output_name=C.LOGITS_NAME,
+                                                     label_name=C.RTL_PREFIX + C.LOGITS_NAME,
+                                                     metric_prefix=C.RTL_PREFIX))
 
     if args.length_task is not None:
         weight = args.length_task_weight
